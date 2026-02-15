@@ -1,3 +1,3 @@
+git+https://github.com/love-apples/maxapi.git
 yt-dlp
-maxapi
 aiohttp
