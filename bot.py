@@ -152,6 +152,18 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ КОМАНД -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
+    # ОТЛАДКА
+    logging.info(f"Тип event.message: {type(event.message)}")
+    logging.info(f"Доступные атрибуты message: {dir(event.message)}")
+    if hasattr(event.message, 'from_'):
+        logging.info(f"from_ есть, тип: {type(event.message.from_)}")
+        if hasattr(event.message.from_, 'id'):
+            logging.info("from_.id доступен")
+        else:
+            logging.info("from_.id НЕ доступен")
+    else:
+        logging.info("from_ отсутствует")
+async def handle_message(event: MessageCreated):
     user_id = event.message.from_.id 
     text = event.message.body.text or ''
     text_lower = text.lower().strip()
