@@ -152,7 +152,7 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ КОМАНД -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    user_id = event.message.from_user.user_id
+    user_id = event.message.from_.id 
     text = event.message.body.text or ''
     text_lower = text.lower().strip()
 
@@ -204,7 +204,7 @@ async def handle_message(event: MessageCreated):
         return
 
     # Команда администратора для активации подписки (скрытая)
-    if text_lower.startswith('/activate') and event.message.from_user.user_id == ADMIN_ID:
+    if text_lower.startswith('/activate') and event.message.from_.id == ADMIN_ID:
         parts = text.split()
         if len(parts) == 3:
             try:
