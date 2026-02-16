@@ -163,7 +163,7 @@ dp = Dispatcher()
     #else:
         #logging.info("from_ отсутствует")
 async def handle_message(event: MessageCreated):
-    user_id = event.message.sender.id 
+    user_id = event.message.sender.user_id 
     text = event.message.body.text or ''
     text_lower = text.lower().strip()
 
@@ -215,7 +215,7 @@ async def handle_message(event: MessageCreated):
         return
 
     # Команда администратора для активации подписки (скрытая)
-    if text_lower.startswith('/activate') and event.message.sender.id == ADMIN_ID:
+    if text_lower.startswith('/activate') and event.message.sender.user_id == ADMIN_ID:
         parts = text.split()
         if len(parts) == 3:
             try:
