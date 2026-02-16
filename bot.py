@@ -481,16 +481,6 @@ async def handle_message(event: MessageCreated):
                 Path(file_path).unlink(missing_ok=True)
                 await status_msg.message.delete()
                 return
-                else:
-                    logger.error(f"catbox вернул некорректную ссылку: {catbox_url}")
-                    # Если catbox не сработал, сообщаем пользователю
-                    await event.message.answer(
-                        "❌ Не удалось загрузить видео ни на MAX (ошибка 502), ни на запасной сервер.\n"
-                        "Попробуйте позже или обратитесь к администратору."
-                    )
-                    Path(file_path).unlink(missing_ok=True)
-                    await status_msg.message.delete()
-                    return
 
             # Если загрузка на MAX успешна – извлекаем file_id
             if isinstance(upload_result, str):
