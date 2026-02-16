@@ -22,32 +22,55 @@ class UploadType(Enum):
     IMAGE = 'image'
     # При необходимости можно добавить AUDIO и т.д.
 
-async def upload_to_catbox(file_path: str) -> str | None:
-    """Загружает файл на catbox.moe и возвращает прямую ссылку."""
-    url = "https://catbox.moe/user/api.php"
+async def upload_to_gofile(file_path: str) -> str | None:
+    """
+    Загружает файл на gofile.io и возвращает прямую ссылку на скачивание.
+    """
+    logger.info(f"📤 gofile.io: начало загрузки {file_path}")
+
+    # 1. Получаем доступный сервер для загрузки [citation:2]
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://api.gofile.io/servers') as resp:
+                if resp.status != 200:
+                    logger.error(f"Ошибка получения сервера: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                if data['status'] != 'ok':
+                    logger.error(f"API вернул ошибку: {data}")
+                    return None
+                # Берём первый доступный сервер из списка
+                server = data['data']['servers'][0]['name']
+                logger.info(f"Выбран сервер: {server}")
+    except Exception as e:
+        logger.error(f"Исключение при получении сервера: {e}")
+        return None
+
+    # 2. Загружаем файл на выбранный сервер [citation:2][citation:6]
+    upload_url = f"https://{server}.gofile.io/uploadFile"
     try:
         with open(file_path, 'rb') as f:
             data = aiohttp.FormData()
-            data.add_field('reqtype', 'fileupload')
-            data.add_field('fileToUpload', f, filename=os.path.basename(file_path))
-            
+            data.add_field('file', f, filename=os.path.basename(file_path))
+
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data) as resp:
-                    if resp.status == 200:
-                        result = await resp.text()
-                        # catbox возвращает просто URL
-                        if result.startswith('http'):
-                            logger.info(f"✅ Файл загружен на catbox: {result}")
-                            return result.strip()
-                        else:
-                            logger.error(f"catbox вернул неожиданный ответ: {result}")
-                            return None
-                    else:
-                        logger.error(f"Ошибка загрузки на catbox: HTTP {resp.status}")
+                async with session.post(upload_url, data=data) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Ошибка загрузки: HTTP {resp.status}")
                         return None
+                    result = await resp.json()
+                    if result['status'] != 'ok':
+                        logger.error(f"API загрузки вернул ошибку: {result}")
+                        return None
+
+                    # Извлекаем ссылку на скачивание [citation:6]
+                    download_page = result['data']['downloadPage']
+                    logger.info(f"✅ Файл загружен на gofile.io: {download_page}")
+                    return download_page
+
     except Exception as e:
-        logger.error(f"Исключение при загрузке на catbox: {e}")
-        return None   
+        logger.error(f"Исключение при загрузке на gofile.io: {e}", exc_info=True)
+        return None
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
@@ -196,30 +219,55 @@ async def download_video(url: str) -> str | None:
         logger.error(f"🔥 Ошибка в download_video: {e}", exc_info=True)
         return None
     
-async def upload_to_catbox(file_path: str) -> str | None:
-    """Загружает файл на catbox.moe и возвращает прямую ссылку."""
-    url = "https://catbox.moe/user/api.php"
+async def upload_to_gofile(file_path: str) -> str | None:
+    """
+    Загружает файл на gofile.io и возвращает прямую ссылку на скачивание.
+    """
+    logger.info(f"📤 gofile.io: начало загрузки {file_path}")
+
+    # 1. Получаем доступный сервер для загрузки 
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://api.gofile.io/servers') as resp:
+                if resp.status != 200:
+                    logger.error(f"Ошибка получения сервера: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                if data['status'] != 'ok':
+                    logger.error(f"API вернул ошибку: {data}")
+                    return None
+                # Берём первый доступный сервер из списка
+                server = data['data']['servers'][0]['name']
+                logger.info(f"Выбран сервер: {server}")
+    except Exception as e:
+        logger.error(f"Исключение при получении сервера: {e}")
+        return None
+
+    # 2. Загружаем файл на выбранный сервер 
+    upload_url = f"https://{server}.gofile.io/uploadFile"
     try:
         with open(file_path, 'rb') as f:
             data = aiohttp.FormData()
-            data.add_field('reqtype', 'fileupload')
-            data.add_field('fileToUpload', f, filename=os.path.basename(file_path))
-            
+            data.add_field('file', f, filename=os.path.basename(file_path))
+
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=data) as resp:
-                    if resp.status == 200:
-                        result = await resp.text()
-                        if result.startswith('http'):
-                            logger.info(f"✅ Файл загружен на catbox: {result}")
-                            return result.strip()
-                        else:
-                            logger.error(f"catbox вернул неожиданный ответ: {result}")
-                            return None
-                    else:
-                        logger.error(f"Ошибка загрузки на catbox: HTTP {resp.status}")
+                async with session.post(upload_url, data=data) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Ошибка загрузки: HTTP {resp.status}")
                         return None
+                    result = await resp.json()
+                    if result['status'] != 'ok':
+                        logger.error(f"API загрузки вернул ошибку: {result}")
+                        return None
+
+                    # Извлекаем ссылку на скачивание 
+                    download_page = result['data']['downloadPage']
+                    logger.info(f"✅ Файл загружен на gofile.io: {download_page}")
+                    return download_page
+
     except Exception as e:
-        logger.error(f"Исключение при загрузке на catbox: {e}")
+        logger.error(f"Исключение при загрузке на gofile.io: {e}", exc_info=True)
+        return Noneor(f"Исключение при загрузке на catbox: {e}")
         return None
 
 def _sync_download(url: str, ydl_opts: dict) -> str | None:
@@ -408,18 +456,18 @@ async def handle_message(event: MessageCreated):
 
             # Если не удалось загрузить на MAX – пробуем catbox
             if not upload_success:
-                logger.info("Пробуем загрузить на catbox.moe...")
-                catbox_url = await upload_to_catbox(file_path)
+                logger.info("Пробуем загрузить на гоуфайл.чтото...")
+                gofile_url = await upload_to_gofile(file_path)
                 logger.info(f"catbox_url = {catbox_url}")
                 
                 # Проверяем, что ссылка валидная (начинается с http и содержит имя файла)
-                if catbox_url and catbox_url.startswith('http') and catbox_url.endswith('.mp4'):
+                if gofile_url and gofile_url.startswith('http') and gofile_url.endswith('.mp4'):
                     # Отправляем новое сообщение со ссылкой и пояснением
                     try:
                         await event.message.answer(
                             "⚠️ *Сервер MAX временно недоступен (ошибка 502).*\n"
                             "🎥 Видео загружено на запасной файлообменник.\n"
-                            f"🔗 [Скачать видео]({catbox_url})\n"
+                            f"🔗 [Скачать видео]({gofile_url})\n"
                             "Ссылка действительна 1 день."
                         )
                         logger.info("✅ Сообщение со ссылкой отправлено")
