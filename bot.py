@@ -321,23 +321,18 @@ async def handle_message(event: MessageCreated):
                    f"🔗 {info['webpage_url']}")
         
         try:
-            if UploadType is None:
-                raise ImportError("UploadType не доступен")
-            
-            # Посмотрим, какие значения есть в UploadType
-            if hasattr(UploadType, '__members__'):
-                logger.info(f"Доступные UploadType: {list(UploadType.__members__.keys())}")
-            
-            # Обычно это VIDEO, DOCUMENT, IMAGE и т.д.
-            file_type = UploadType.VIDEO  # используем наш enum
-            
+            file_type = UploadType.VIDEO
             logger.info(f"file_path: {file_path}, file_type: {file_type}")
             
             # Загружаем файл
             upload_result = await bot.upload_file('', file_path, file_type)
             logger.info(f"✅ Файл загружен, результат: {upload_result}")
             
-            # Извлекаем file_id (адаптируемся под возможные форматы ответа)
+            # Проверяем, не вернулась ли ошибка HTML (502)
+            if isinstance(upload_result, str) and '<html' in upload_result.lower():
+                raise Exception("Ошибка загрузки на сервер MAX (502). Попробуйте позже.")
+            
+            # Извлекаем идентификатор файла (предполагаем, что это строка или объект с полем file_id)
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
@@ -348,17 +343,53 @@ async def handle_message(event: MessageCreated):
                 file_id = str(upload_result)
                 logger.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
             
-            # Отправляем видео
-            await bot.send_message(
-                chat_id=event.message.recipient.chat_id,
-                text=caption,
-                file_id=file_id
-            )
-            logger.info("✅ Видео отправлено")
+            # Пытаемся отправить сообщение с файлом разными способами
+            sent = False
+            chat_id = event.message.recipient.chat_id
+            
+            # Способ 1: параметр file_id
+            try:
+                await bot.send_message(chat_id, caption, file_id=file_id)
+                logger.info("✅ Отправлено через file_id")
+                sent = True
+            except TypeError:
+                pass
+            
+            if not sent:
+                # Способ 2: параметр media
+                try:
+                    await bot.send_message(chat_id, caption, media=file_id)
+                    logger.info("✅ Отправлено через media")
+                    sent = True
+                except TypeError:
+                    pass
+            
+            if not sent:
+                # Способ 3: параметр attachment
+                try:
+                    await bot.send_message(chat_id, caption, attachment=file_id)
+                    logger.info("✅ Отправлено через attachment")
+                    sent = True
+                except TypeError:
+                    pass
+            
+            if not sent:
+                # Способ 4: отдельный метод send_video (если есть)
+                if hasattr(bot, 'send_video'):
+                    await bot.send_video(chat_id, file_id, caption=caption)
+                    logger.info("✅ Отправлено через send_video")
+                    sent = True
+                elif hasattr(bot, 'send_document'):
+                    await bot.send_document(chat_id, file_id, caption=caption)
+                    logger.info("✅ Отправлено через send_document")
+                    sent = True
+            
+            if not sent:
+                raise Exception("Не удалось отправить видео ни одним из способов")
             
         except Exception as e:
             logger.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
-            await status_msg.message.edit("❌ Не удалось отправить видео. Ошибка загрузки.")
+            await status_msg.message.edit(f"❌ Не удалось отправить видео. {str(e)}")
             return
 
         # Удаляем статусное сообщение
