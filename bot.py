@@ -240,6 +240,15 @@ async def handle_message(event: MessageCreated):
 
         # Отправляем статус
         status_msg = await event.message.answer("🔍 Получаю информацию о видео...")
+            # ОТЛАДКА status_msg
+    logging.info(f"===== STATUS_MSG ATTRIBUTES =====")
+    logging.info(f"Тип status: {type(status)}")
+    logging.info(f"Атрибуты status: {dir(status)}")
+    if hasattr(status, 'recipient'):
+        logging.info(f"recipient атрибуты: {dir(status.recipient)}")
+    if hasattr(status, 'chat'):
+        logging.info(f"chat атрибуты: {dir(status.chat)}")
+   
 
         # Получаем метаданные
         info = await asyncio.to_thread(extract_video_info, url)
