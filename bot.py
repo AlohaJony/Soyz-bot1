@@ -10,6 +10,25 @@ import yt_dlp
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
 
+import subprocess
+import sys
+
+def install_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        logger.info("✅ ffmpeg уже установлен")
+    except:
+        logger.info("📦 ffmpeg не найден, устанавливаю...")
+        try:
+            subprocess.run(["apt-get", "update"], check=True)
+            subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
+            logger.info("✅ ffmpeg успешно установлен")
+        except Exception as e:
+            logger.error(f"❌ Не удалось установить ffmpeg: {e}")
+
+# Вызовите функцию при старте
+install_ffmpeg()
+
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # ID администратора для ручной активации
@@ -123,23 +142,42 @@ async def download_video(url: str) -> str | None:
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,          # Включаем вывод yt-dlp
+        'no_warnings': False,
+        'verbose': True,         # Максимально подробно
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # Проверяем, доступна ли папка для записи
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+        logger.info(f"📥 Начинаю скачивание: {url}")
+
+        # Запускаем yt-dlp в отдельном потоке, чтобы не блокировать event loop
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, lambda: _sync_download(url, ydl_opts))
+        return result
+    except Exception as e:
+        logger.error(f"🔥 Ошибка в download_video: {e}", exc_info=True)
+        return None
+
+def _sync_download(url: str, ydl_opts: dict) -> str | None:
+    """Синхронная функция для запуска в executor."""
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
             if Path(filename).exists():
+                logger.info(f"✅ Файл скачан: {filename}")
                 return filename
-            # Если расширение не совпало – ищем по ID
+            # Ищем по ID
             for f in Path(DOWNLOAD_DIR).glob(f"{info['id']}.*"):
+                logger.info(f"✅ Найден альтернативный файл: {f}")
                 return str(f)
+            logger.error("❌ Файл не найден после скачивания")
             return None
-    except Exception as e:
-        logger.error(f"Ошибка скачивания: {e}")
-        return None
-
+        except Exception as e:
+            logger.error(f"❌ Ошибка в _sync_download: {e}", exc_info=True)
+            return None
+        
 # ----------------------------- ИНИЦИАЛИЗАЦИЯ БОТА -----------------------------
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
