@@ -13,7 +13,6 @@ from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
 
 # ----------------------------- НАСТРОЙКИ -----------------------------
-print("========== НОВАЯ ВЕРСИЯ БОТА (from_ fix) ==========")
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # ID администратора для ручной активации
 # Стоимость подписок (в рублях)
