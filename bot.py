@@ -11,6 +11,16 @@ import yt_dlp
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
 
+try:
+    from maxapi.types import UploadType
+    logger.info("✅ UploadType импортирован из maxapi.types")
+except ImportError:
+    try:
+        from maxapi.enums import UploadType
+        logger.info("✅ UploadType импортирован из maxapi.enums")
+    except ImportError:
+        logger.error("❌ Не удалось импортировать UploadType. Проверьте версию библиотеки.")
+        UploadType = None
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
@@ -313,20 +323,23 @@ async def handle_message(event: MessageCreated):
                    f"🔗 {info['webpage_url']}")
         
         try:
-            # Определяем тип файла (для видео)
-            file_type = 'video'
+            if UploadType is None:
+                raise ImportError("UploadType не доступен")
             
-            # Диагностика: сигнатура метода и значения
-            import inspect
-            sig = inspect.signature(bot.upload_file)
-            logging.info(f"📌 Сигнатура upload_file: {sig}")
-            logging.info(f"file_path: {file_path}, file_type: {file_type}")
+            # Посмотрим, какие значения есть в UploadType
+            if hasattr(UploadType, '__members__'):
+                logger.info(f"Доступные UploadType: {list(UploadType.__members__.keys())}")
             
-            # Вариант 1: передаём три аргумента: url (пустой), path, type
+            # Обычно это VIDEO, DOCUMENT, IMAGE и т.д.
+            file_type = UploadType.VIDEO  # или UploadType.VIDEO, если так называется
+            
+            logger.info(f"file_path: {file_path}, file_type: {file_type}")
+            
+            # Загружаем файл
             upload_result = await bot.upload_file('', file_path, file_type)
-            logging.info(f"✅ Файл загружен, результат: {upload_result}")
+            logger.info(f"✅ Файл загружен, результат: {upload_result}")
             
-            # Извлекаем file_id (может быть строкой или объектом)
+            # Извлекаем file_id (адаптируемся под возможные форматы ответа)
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
@@ -335,45 +348,20 @@ async def handle_message(event: MessageCreated):
                 file_id = upload_result['file_id']
             else:
                 file_id = str(upload_result)
-                logging.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
+                logger.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
             
-            # Отправляем сообщение с файлом
+            # Отправляем видео
             await bot.send_message(
                 chat_id=event.message.recipient.chat_id,
                 text=caption,
                 file_id=file_id
             )
-            logging.info("✅ Видео отправлено через send_message с file_id")
+            logger.info("✅ Видео отправлено")
             
         except Exception as e:
-            logging.error(f"❌ Ошибка в первом варианте: {e}", exc_info=True)
-            # Пробуем альтернативный порядок (type, path, url)
-            try:
-                logging.info("🔄 Пробуем вариант с порядком (type, path, url)")
-                upload_result = await bot.upload_file(file_type, file_path, '')
-                logging.info(f"✅ Второй вариант сработал, результат: {upload_result}")
-                
-                # Повторяем извлечение file_id (можно вынести в функцию, но для простоты повторим)
-                if isinstance(upload_result, str):
-                    file_id = upload_result
-                elif hasattr(upload_result, 'file_id'):
-                    file_id = upload_result.file_id
-                elif isinstance(upload_result, dict) and 'file_id' in upload_result:
-                    file_id = upload_result['file_id']
-                else:
-                    file_id = str(upload_result)
-                
-                await bot.send_message(
-                    chat_id=event.message.recipient.chat_id,
-                    text=caption,
-                    file_id=file_id
-                )
-                logging.info("✅ Видео отправлено через второй вариант")
-                
-            except Exception as e2:
-                logging.error(f"❌ И второй вариант не сработал: {e2}", exc_info=True)
-                await status_msg.message.edit("❌ Не удалось отправить видео. Проверьте логи.")
-                return
+            logger.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
+            await status_msg.message.edit("❌ Не удалось отправить видео. Ошибка загрузки.")
+            return
 
         # Удаляем статусное сообщение
         await status_msg.message.delete()
