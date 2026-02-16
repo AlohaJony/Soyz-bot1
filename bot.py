@@ -313,19 +313,21 @@ async def handle_message(event: MessageCreated):
                    f"🔗 {info['webpage_url']}")
         
         try:
-            # 1. Загружаем файл
+            # 1. Загружаем файл (передаём открытый файл позиционно)
             with open(file_path, 'rb') as f:
-                upload_result = await bot.upload_file(file=f)
+                upload_result = await bot.upload_file(f)
             logging.info(f"✅ Файл загружен, результат: {upload_result}")
             
-            # 2. Извлекаем file_id (предполагаем, что он есть в ответе)
-            if hasattr(upload_result, 'file_id'):
+            # 2. Извлекаем file_id (может быть строка или объект с полем file_id)
+            if isinstance(upload_result, str):
+                file_id = upload_result
+            elif hasattr(upload_result, 'file_id'):
                 file_id = upload_result.file_id
             elif isinstance(upload_result, dict) and 'file_id' in upload_result:
                 file_id = upload_result['file_id']
             else:
-                # Если вернулась просто строка — считаем её file_id
                 file_id = str(upload_result)
+                logging.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
             
             # 3. Отправляем сообщение с файлом
             await bot.send_message(
@@ -337,7 +339,7 @@ async def handle_message(event: MessageCreated):
             
         except Exception as e:
             logging.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
-            await status_msg.message.edit("❌ Не удалось отправить видео. Ошибка.")
+            await status_msg.message.edit("❌ Не удалось отправить видео. Проверьте логи.")
             return
 
         # Удаляем статусное сообщение
