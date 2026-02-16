@@ -16,6 +16,7 @@ from maxapi.types import MessageCreated
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # ID администратора для ручной активации
 '1111'
+user_id = event.message.from_.id
 # Стоимость подписок (в рублях)
 SUBSCRIPTION_PRICES = {
     'week': 200,
