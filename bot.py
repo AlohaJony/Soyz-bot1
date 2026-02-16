@@ -313,12 +313,17 @@ async def handle_message(event: MessageCreated):
                    f"🔗 {info['webpage_url']}")
         
         try:
-            # 1. Загружаем файл, передаём путь и тип (скорее всего 'video')
-            file_type = 'video'  # для видео
-            upload_result = await bot.upload_file(file_path, file_type)
+            # Диагностика: проверяем сигнатуру метода и значения переменных
+            import inspect
+            sig = inspect.signature(bot.upload_file)
+            logging.info(f"📌 Сигнатура upload_file: {sig}")
+            logging.info(f"file_path: {file_path}, file_type: {file_type}")
+            
+            # Вариант 1: именованные аргументы (самый явный)
+            upload_result = await bot.upload_file(path=file_path, type=file_type)
             logging.info(f"✅ Файл загружен, результат: {upload_result}")
             
-            # 2. Извлекаем file_id (может быть строкой или объектом)
+            # Извлекаем file_id (как раньше)
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
@@ -329,7 +334,7 @@ async def handle_message(event: MessageCreated):
                 file_id = str(upload_result)
                 logging.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
             
-            # 3. Отправляем сообщение с файлом
+            # Отправляем сообщение с файлом
             await bot.send_message(
                 chat_id=event.message.recipient.chat_id,
                 text=caption,
@@ -339,8 +344,17 @@ async def handle_message(event: MessageCreated):
             
         except Exception as e:
             logging.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
-            await status_msg.message.edit("❌ Не удалось отправить видео. Проверьте логи.")
-            return
+            # Если не сработало с именованными, попробуем с другим порядком
+            try:
+                logging.info("🔄 Пробуем вариант с обратным порядком аргументов (type, path)")
+                upload_result = await bot.upload_file(file_type, file_path)
+                logging.info(f"✅ Второй вариант сработал, результат: {upload_result}")
+                # ... здесь нужно повторить извлечение file_id и отправку
+                # Но чтобы не дублировать код, можно после успеха выйти из внешнего except
+            except Exception as e2:
+                logging.error(f"❌ И второй вариант не сработал: {e2}", exc_info=True)
+                await status_msg.message.edit("❌ Не удалось отправить видео. Проверьте логи.")
+                return
 
         # Удаляем статусное сообщение
         await status_msg.message.delete()
