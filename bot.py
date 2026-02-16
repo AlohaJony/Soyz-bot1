@@ -3,11 +3,9 @@ import logging
 import os
 import re
 import sqlite3
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import aiohttp
 import yt_dlp
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
@@ -15,6 +13,7 @@ from maxapi.types import MessageCreated
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # ID администратора для ручной активации
+
 # Стоимость подписок (в рублях)
 SUBSCRIPTION_PRICES = {
     'week': 200,
@@ -58,7 +57,6 @@ def get_subscription(user_id: int):
     row = c.fetchone()
     conn.close()
     if row and row[0]:
-        # Парсим строку с датой
         try:
             expires = datetime.fromisoformat(row[0])
             if expires > datetime.now():
@@ -98,7 +96,7 @@ def format_duration(seconds: int) -> str:
     else:
         return f"{m:02d}:{s:02d}"
 
-def extract_video_info(url: str) -> dict:
+def extract_video_info(url: str) -> dict | None:
     """Извлекает информацию о видео через yt-dlp."""
     ydl_opts = {
         'quiet': True,
@@ -131,12 +129,10 @@ async def download_video(url: str) -> str | None:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Определяем имя файла
             filename = ydl.prepare_filename(info)
             if Path(filename).exists():
                 return filename
             # Если расширение не совпало – ищем по ID
-            base = Path(DOWNLOAD_DIR) / info['id']
             for f in Path(DOWNLOAD_DIR).glob(f"{info['id']}.*"):
                 return str(f)
             return None
@@ -150,20 +146,8 @@ dp = Dispatcher()
 
 # ----------------------------- ОБРАБОТЧИКИ КОМАНД -----------------------------
 @dp.message_created()
-#async def handle_message(event: MessageCreated):
-    # ОТЛАДКА
-    #logging.info(f"Тип event.message: {type(event.message)}")
-    #logging.info(f"Доступные атрибуты message: {dir(event.message)}")
-    #if hasattr(event.message, 'from_'):
-        #logging.info(f"from_ есть, тип: {type(event.message.from_)}")
-        #if hasattr(event.message.from_, 'id'):
-            #logging.info("from_.id доступен")
-        #else:
-            #logging.info("from_.id НЕ доступен")
-    #else:
-        #logging.info("from_ отсутствует")
 async def handle_message(event: MessageCreated):
-    user_id = event.message.sender.user_id 
+    user_id = event.message.sender.user_id
     text = event.message.body.text or ''
     text_lower = text.lower().strip()
 
@@ -240,64 +224,49 @@ async def handle_message(event: MessageCreated):
 
         # Отправляем статус
         status_msg = await event.message.answer("🔍 Получаю информацию о видео...")
-        # ОТЛАДКА status_msg
-        logging.info("===== STATUS_MSG ATTRIBUTES =====")
-        logging.info(f"Тип status_msg: {type(status_msg)}")
-        logging.info(f"Атрибуты status_msg: {dir(status_msg)}")
-        if hasattr(status_msg, 'recipient'):
-            logging.info(f"recipient атрибуты: {dir(status_msg.recipient)}")
-        if hasattr(status_msg, 'chat'):
-            logging.info(f"chat атрибуты: {dir(status_msg.chat)}")
-        if hasattr(status_msg, 'message'):
-            logging.info(f"===== MESSAGE INSIDE STATUS_MSG =====")
-            logging.info(f"Тип status_msg.message: {type(status_msg.message)}")
-            logging.info(f"Атрибуты status_msg.message: {dir(status_msg.message)}")
-            if hasattr(status_msg.message, 'recipient'):
-                logging.info(f"message.recipient атрибуты: {dir(status_msg.message.recipient)}")
-                if hasattr(status_msg.message.recipient, 'chat_id'):
-                    logging.info(f"message.recipient.chat_id = {status_msg.message.recipient.chat_id}")
-            if hasattr(status_msg.message, 'chat'):
-                logging.info(f"message.chat атрибуты: {dir(status_msg.message.chat)}")
-                if hasattr(status_msg.message.chat, 'id'):
-                    logging.info(f"message.chat.id = {status_msg.message.chat.id}")    
-   
+
+        # (Опционально: отладка структуры status_msg, можно раскомментировать при необходимости)
+        # logging.info("===== STATUS_MSG ATTRIBUTES =====")
+        # logging.info(f"Тип status_msg: {type(status_msg)}")
+        # logging.info(f"Атрибуты status_msg: {dir(status_msg)}")
+        # if hasattr(status_msg, 'message'):
+        #     logging.info(f"Тип status_msg.message: {type(status_msg.message)}")
+        #     logging.info(f"Атрибуты status_msg.message: {dir(status_msg.message)}")
+        #     if hasattr(status_msg.message, 'recipient'):
+        #         logging.info(f"message.recipient атрибуты: {dir(status_msg.message.recipient)}")
+        #         if hasattr(status_msg.message.recipient, 'chat_id'):
+        #             logging.info(f"message.recipient.chat_id = {status_msg.message.recipient.chat_id}")
 
         # Получаем метаданные
         info = await asyncio.to_thread(extract_video_info, url)
         if not info:
-            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
-                "❌ Не удалось получить информацию о видео. Проверьте ссылку."
-            )
+            await status_msg.message.edit("❌ Не удалось получить информацию о видео. Проверьте ссылку.")
             return
 
         # Проверяем длительность
         duration = info['duration']
         if duration > FREE_LIMIT_SECONDS:
-            # Проверяем подписку
             sub = get_subscription(user_id)
             if not sub:
-                await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
+                await status_msg.message.edit(
                     f"⏱ Видео длится {format_duration(duration)} (больше 10 минут).\n"
                     f"🔒 Для скачивания длинных видео нужна подписка.\n"
                     f"Наберите /subscribe для оформления."
                 )
                 return
             else:
-                # Подписка есть – можно качать
-                await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
+                await status_msg.message.edit(
                     f"⏱ Длительность: {format_duration(duration)}. Подписка активна, скачиваю..."
                 )
         else:
-            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
+            await status_msg.message.edit(
                 f"⏱ Длительность: {format_duration(duration)}. Скачиваю..."
             )
 
         # Скачиваем видео
         file_path = await download_video(url)
         if not file_path or not Path(file_path).exists():
-            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
-                "❌ Не удалось скачать видео. Возможно, видео защищено или недоступно."
-            )
+            await status_msg.message.edit("❌ Не удалось скачать видео. Возможно, видео защищено или недоступно.")
             return
 
         # Отправляем видео
@@ -310,16 +279,14 @@ async def handle_message(event: MessageCreated):
             caption=caption
         )
 
-        # Удаляем статус
-        # Пока используем chat.id, но после отладки может измениться
-        await bot.delete_message(event.message.recipient.chat_id, status_msg.message_id)
+        # Удаляем статусное сообщение
+        await status_msg.message.delete()
 
         # Удаляем файл с диска
         Path(file_path).unlink(missing_ok=True)
 
         # Отправляем описание (если есть)
         if info['description']:
-            # Обрезаем слишком длинное описание (MAX ограничение 4096 символов)
             desc = info['description'][:4000]
             await event.message.answer(f"📝 Описание:\n\n{desc}")
 
