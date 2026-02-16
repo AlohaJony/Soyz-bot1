@@ -265,9 +265,7 @@ async def handle_message(event: MessageCreated):
         # Получаем метаданные
         info = await asyncio.to_thread(extract_video_info, url)
         if not info:
-            await bot.edit_message(
-                event.message.recipient.chat_id,
-                status_msg.message_id,
+            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
                 "❌ Не удалось получить информацию о видео. Проверьте ссылку."
             )
             return
@@ -278,9 +276,7 @@ async def handle_message(event: MessageCreated):
             # Проверяем подписку
             sub = get_subscription(user_id)
             if not sub:
-                await bot.edit_message(
-                    event.message.recipient.chat_id,
-                    status_msg.message_id,
+                await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
                     f"⏱ Видео длится {format_duration(duration)} (больше 10 минут).\n"
                     f"🔒 Для скачивания длинных видео нужна подписка.\n"
                     f"Наберите /subscribe для оформления."
@@ -288,24 +284,18 @@ async def handle_message(event: MessageCreated):
                 return
             else:
                 # Подписка есть – можно качать
-                await bot.edit_message(
-                    event.message.recipient.chat_id,
-                    status_msg.message_id,
+                await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
                     f"⏱ Длительность: {format_duration(duration)}. Подписка активна, скачиваю..."
                 )
         else:
-            await bot.edit_message(
-                event.message.recipient.chat_id,
-                status_msg.message_id,
+            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
                 f"⏱ Длительность: {format_duration(duration)}. Скачиваю..."
             )
 
         # Скачиваем видео
         file_path = await download_video(url)
         if not file_path or not Path(file_path).exists():
-            await bot.edit_message(
-                event.message.recipient.chat_id,
-                status_msg.message_id,
+            await bot.edit_message(event.message.recipient.chat_id, status_msg.message_id,
                 "❌ Не удалось скачать видео. Возможно, видео защищено или недоступно."
             )
             return
