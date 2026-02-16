@@ -32,18 +32,19 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------- УСТАНОВКА FFMPEG (если нужно) -----------------------------
 def install_ffmpeg():
+    """Пытается установить ffmpeg, если его нет (для Debian/Ubuntu)."""
     try:
         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
         logger.info("✅ ffmpeg уже установлен")
     except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.info("📦 ffmpeg не найден, устанавливаю...")
+        logger.info("📦 ffmpeg не найден, пытаюсь установить...")
         try:
             subprocess.run(["apt-get", "update"], check=True, timeout=60)
             subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True, timeout=120)
             logger.info("✅ ffmpeg успешно установлен")
         except Exception as e:
             logger.error(f"❌ Не удалось установить ffmpeg: {e}")
-            logger.warning("Продолжаю без ffmpeg — некоторые видео могут не обрабатываться")
+            logger.warning("⚠️ Продолжаю без ffmpeg. Некоторые видео могут не скачиваться (требуется объединение потоков).")
 
 # Вызываем функцию
 install_ffmpeg()
@@ -305,15 +306,47 @@ async def handle_message(event: MessageCreated):
             await status_msg.message.edit("❌ Не удалось скачать видео. Возможно, видео защищено или недоступно.")
             return
 
-        # Отправляем видео
+                # Отправляем видео
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
                    f"⏱ {format_duration(duration)}\n"
                    f"🔗 {info['webpage_url']}")
-        await event.message.answer_with_file(
-            file_path=file_path,
-            caption=caption
-        )
+        
+        # ОТЛАДКА: выводим доступные методы для поиска правильного способа отправки файла
+        logging.info("===== ПОИСК МЕТОДА ДЛЯ ОТПРАВКИ ФАЙЛА =====")
+        logging.info(f"Методы bot (без _): {[m for m in dir(bot) if not m.startswith('_')]}")
+        logging.info(f"Методы event.message (без _): {[m for m in dir(event.message) if not m.startswith('_')]}")
+        
+        # Пробуем отправить файл через bot.send_file (предположительный метод)
+        try:
+            with open(file_path, 'rb') as f:
+                await bot.send_file(
+                    chat_id=event.message.recipient.chat_id,
+                    file=f,
+                    caption=caption
+                )
+            logging.info("✅ Файл отправлен через bot.send_file")
+        except AttributeError as e:
+            logging.error(f"❌ bot.send_file не сработал: {e}")
+            # Пробуем через bot.send_video
+            try:
+                with open(file_path, 'rb') as f:
+                    await bot.send_video(
+                        chat_id=event.message.recipient.chat_id,
+                        video=f,
+                        caption=caption
+                    )
+                logging.info("✅ Файл отправлен через bot.send_video")
+            except AttributeError as e:
+                logging.error(f"❌ bot.send_video тоже не сработал: {e}")
+                # Если ничего не помогло, выводим все методы bot (полный список)
+                logging.error(f"Полный список методов bot: {dir(bot)}")
+                await event.message.answer("❌ Не удалось отправить видео. Ошибка отправки.")
+                return
+        except Exception as e:
+            logging.error(f"🔥 Другая ошибка при отправке: {e}")
+            await event.message.answer("❌ Не удалось отправить видео. Ошибка.")
+            return
 
         # Удаляем статусное сообщение
         await status_msg.message.delete()
