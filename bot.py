@@ -11,16 +11,14 @@ import yt_dlp
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
 
-try:
-    from maxapi.types import UploadType
-    logger.info("✅ UploadType импортирован из maxapi.types")
-except ImportError:
-    try:
-        from maxapi.enums import UploadType
-        logger.info("✅ UploadType импортирован из maxapi.enums")
-    except ImportError:
-        logger.error("❌ Не удалось импортировать UploadType. Проверьте версию библиотеки.")
-        UploadType = None
+from enum import Enum
+
+# Создаём свой UploadType, так как библиотека не экспортирует его
+class UploadType(Enum):
+    VIDEO = 'video'
+    DOCUMENT = 'document'
+    IMAGE = 'image'
+    # При необходимости можно добавить AUDIO и т.д.
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
@@ -331,7 +329,7 @@ async def handle_message(event: MessageCreated):
                 logger.info(f"Доступные UploadType: {list(UploadType.__members__.keys())}")
             
             # Обычно это VIDEO, DOCUMENT, IMAGE и т.д.
-            file_type = UploadType.VIDEO  # или UploadType.VIDEO, если так называется
+            file_type = UploadType.VIDEO  # используем наш enum
             
             logger.info(f"file_path: {file_path}, file_type: {file_type}")
             
