@@ -150,20 +150,20 @@ dp = Dispatcher()
 
 # ----------------------------- ОБРАБОТЧИКИ КОМАНД -----------------------------
 @dp.message_created()
-async def handle_message(event: MessageCreated):
+#async def handle_message(event: MessageCreated):
     # ОТЛАДКА
-    logging.info(f"Тип event.message: {type(event.message)}")
-    logging.info(f"Доступные атрибуты message: {dir(event.message)}")
-    if hasattr(event.message, 'from_'):
-        logging.info(f"from_ есть, тип: {type(event.message.from_)}")
-        if hasattr(event.message.from_, 'id'):
-            logging.info("from_.id доступен")
-        else:
-            logging.info("from_.id НЕ доступен")
-    else:
-        logging.info("from_ отсутствует")
+    #logging.info(f"Тип event.message: {type(event.message)}")
+    #logging.info(f"Доступные атрибуты message: {dir(event.message)}")
+    #if hasattr(event.message, 'from_'):
+        #logging.info(f"from_ есть, тип: {type(event.message.from_)}")
+        #if hasattr(event.message.from_, 'id'):
+            #logging.info("from_.id доступен")
+        #else:
+            #logging.info("from_.id НЕ доступен")
+    #else:
+        #logging.info("from_ отсутствует")
 async def handle_message(event: MessageCreated):
-    user_id = event.message.from_.id 
+    user_id = event.message.sender.id 
     text = event.message.body.text or ''
     text_lower = text.lower().strip()
 
@@ -215,7 +215,7 @@ async def handle_message(event: MessageCreated):
         return
 
     # Команда администратора для активации подписки (скрытая)
-    if text_lower.startswith('/activate') and event.message.from_.id == ADMIN_ID:
+    if text_lower.startswith('/activate') and event.message.sender.id == ADMIN_ID:
         parts = text.split()
         if len(parts) == 3:
             try:
