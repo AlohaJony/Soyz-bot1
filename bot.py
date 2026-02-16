@@ -300,7 +300,7 @@ async def handle_message(event: MessageCreated):
         )
 
         # Удаляем статус
-        await bot.delete_message(status_msg.recipient.chat_id, status_msg.message_id)
+        await bot.delete_message(status_msg.chat.id, status_msg.message_id)
 
         # Удаляем файл с диска
         Path(file_path).unlink(missing_ok=True)
