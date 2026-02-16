@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess  # <-- добавьте этот импорт, если его нет
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -10,48 +11,45 @@ import yt_dlp
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated
 
-import subprocess
-import sys
-
-def install_ffmpeg():
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        logger.info("✅ ffmpeg уже установлен")
-    except:
-        logger.info("📦 ffmpeg не найден, устанавливаю...")
-        try:
-            subprocess.run(["apt-get", "update"], check=True)
-            subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
-            logger.info("✅ ffmpeg успешно установлен")
-        except Exception as e:
-            logger.error(f"❌ Не удалось установить ffmpeg: {e}")
-
-# Вызовите функцию при старте
-install_ffmpeg()
-
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))  # ID администратора для ручной активации
+ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
 
-# Стоимость подписок (в рублях)
+# Стоимость подписок
 SUBSCRIPTION_PRICES = {
     'week': 200,
     'month': 599
 }
 
-# Длительность видео, после которой требуется подписка (в секундах)
-FREE_LIMIT_SECONDS = 10 * 60  # 10 минут
-
-# Путь к базе данных
+FREE_LIMIT_SECONDS = 10 * 60
 DB_PATH = 'subscriptions.db'
-
-# Папка для скачанных видео
 DOWNLOAD_DIR = 'downloads'
 Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ----------------------------- УСТАНОВКА FFMPEG (если нужно) -----------------------------
+def install_ffmpeg():
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+        logger.info("✅ ffmpeg уже установлен")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.info("📦 ffmpeg не найден, устанавливаю...")
+        try:
+            subprocess.run(["apt-get", "update"], check=True, timeout=60)
+            subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True, timeout=120)
+            logger.info("✅ ffmpeg успешно установлен")
+        except Exception as e:
+            logger.error(f"❌ Не удалось установить ffmpeg: {e}")
+            logger.warning("Продолжаю без ffmpeg — некоторые видео могут не обрабатываться")
+
+# Вызываем функцию
+install_ffmpeg()
+
+# ----------------------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------------------
+# ... (дальше идут ваши функции init_db, get_subscription и т.д.)
 
 # ----------------------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------------------
 def init_db():
