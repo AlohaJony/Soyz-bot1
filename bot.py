@@ -248,13 +248,25 @@ async def handle_message(event: MessageCreated):
             logging.info(f"recipient атрибуты: {dir(status_msg.recipient)}")
         if hasattr(status_msg, 'chat'):
             logging.info(f"chat атрибуты: {dir(status_msg.chat)}")
+        if hasattr(status_msg, 'message'):
+            logging.info(f"===== MESSAGE INSIDE STATUS_MSG =====")
+            logging.info(f"Тип status_msg.message: {type(status_msg.message)}")
+            logging.info(f"Атрибуты status_msg.message: {dir(status_msg.message)}")
+            if hasattr(status_msg.message, 'recipient'):
+                logging.info(f"message.recipient атрибуты: {dir(status_msg.message.recipient)}")
+                if hasattr(status_msg.message.recipient, 'chat_id'):
+                    logging.info(f"message.recipient.chat_id = {status_msg.message.recipient.chat_id}")
+            if hasattr(status_msg.message, 'chat'):
+                logging.info(f"message.chat атрибуты: {dir(status_msg.message.chat)}")
+                if hasattr(status_msg.message.chat, 'id'):
+                    logging.info(f"message.chat.id = {status_msg.message.chat.id}")    
    
 
         # Получаем метаданные
         info = await asyncio.to_thread(extract_video_info, url)
         if not info:
             await bot.edit_message(
-                status_msg.chat_id,
+                event.message.recipient.chat_id,
                 status_msg.message_id,
                 "❌ Не удалось получить информацию о видео. Проверьте ссылку."
             )
@@ -267,7 +279,7 @@ async def handle_message(event: MessageCreated):
             sub = get_subscription(user_id)
             if not sub:
                 await bot.edit_message(
-                    status_msg.chat_id,
+                    event.message.recipient.chat_id,
                     status_msg.message_id,
                     f"⏱ Видео длится {format_duration(duration)} (больше 10 минут).\n"
                     f"🔒 Для скачивания длинных видео нужна подписка.\n"
@@ -277,13 +289,13 @@ async def handle_message(event: MessageCreated):
             else:
                 # Подписка есть – можно качать
                 await bot.edit_message(
-                    status_msg.chat_id,
+                    event.message.recipient.chat_id,
                     status_msg.message_id,
                     f"⏱ Длительность: {format_duration(duration)}. Подписка активна, скачиваю..."
                 )
         else:
             await bot.edit_message(
-                status_msg.chat_id,
+                event.message.recipient.chat_id,
                 status_msg.message_id,
                 f"⏱ Длительность: {format_duration(duration)}. Скачиваю..."
             )
@@ -292,7 +304,7 @@ async def handle_message(event: MessageCreated):
         file_path = await download_video(url)
         if not file_path or not Path(file_path).exists():
             await bot.edit_message(
-                status_msg.chat_id,
+                event.message.recipient.chat_id,
                 status_msg.message_id,
                 "❌ Не удалось скачать видео. Возможно, видео защищено или недоступно."
             )
@@ -310,7 +322,7 @@ async def handle_message(event: MessageCreated):
 
         # Удаляем статус
         # Пока используем chat.id, но после отладки может измениться
-        await bot.delete_message(status_msg.chat.id, status_msg.message_id)
+        await bot.delete_message(event.message.recipient.chat_id, status_msg.message_id)
 
         # Удаляем файл с диска
         Path(file_path).unlink(missing_ok=True)
