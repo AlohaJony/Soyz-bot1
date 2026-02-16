@@ -324,15 +324,27 @@ async def handle_message(event: MessageCreated):
             file_type = UploadType.VIDEO
             logger.info(f"file_path: {file_path}, file_type: {file_type}")
             
-            # Загружаем файл
-            upload_result = await bot.upload_file('', file_path, file_type)
-            logger.info(f"✅ Файл загружен, результат: {upload_result}")
+            # Повторные попытки загрузки
+            max_retries = 3
+            retry_delay = 5
+            for attempt in range(1, max_retries + 1):
+                try:
+                    upload_result = await bot.upload_file('', file_path, file_type)
+                    logger.info(f"✅ Файл загружен, результат: {upload_result}")
+                    
+                    if isinstance(upload_result, str) and '<html' in upload_result.lower() and '502' in upload_result:
+                        raise Exception("Ошибка загрузки на сервер MAX (502)")
+                    
+                    break  # успех
+                except Exception as e:
+                    logger.warning(f"Попытка {attempt} не удалась: {e}")
+                    if attempt == max_retries:
+                        raise
+                    await asyncio.sleep(retry_delay)
+            else:
+                raise Exception("Не удалось загрузить файл после нескольких попыток")
             
-            # Проверяем, не вернулась ли ошибка HTML (502)
-            if isinstance(upload_result, str) and '<html' in upload_result.lower():
-                raise Exception("Ошибка загрузки на сервер MAX (502). Попробуйте позже.")
-            
-            # Извлекаем идентификатор файла (предполагаем, что это строка или объект с полем file_id)
+            # Извлекаем file_id (как раньше)
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
@@ -343,7 +355,7 @@ async def handle_message(event: MessageCreated):
                 file_id = str(upload_result)
                 logger.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
             
-            # Пытаемся отправить сообщение с файлом разными способами
+            # Отправляем сообщение с файлом (пробуем разные варианты)
             sent = False
             chat_id = event.message.recipient.chat_id
             
@@ -374,7 +386,7 @@ async def handle_message(event: MessageCreated):
                     pass
             
             if not sent:
-                # Способ 4: отдельный метод send_video (если есть)
+                # Способ 4: отдельные методы
                 if hasattr(bot, 'send_video'):
                     await bot.send_video(chat_id, file_id, caption=caption)
                     logger.info("✅ Отправлено через send_video")
