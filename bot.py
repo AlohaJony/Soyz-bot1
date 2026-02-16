@@ -240,14 +240,14 @@ async def handle_message(event: MessageCreated):
 
         # Отправляем статус
         status_msg = await event.message.answer("🔍 Получаю информацию о видео...")
-            # ОТЛАДКА status_msg
-    logging.info(f"===== STATUS_MSG ATTRIBUTES =====")
-    logging.info(f"Тип status: {type(status)}")
-    logging.info(f"Атрибуты status: {dir(status)}")
-    if hasattr(status, 'recipient'):
-        logging.info(f"recipient атрибуты: {dir(status.recipient)}")
-    if hasattr(status, 'chat'):
-        logging.info(f"chat атрибуты: {dir(status.chat)}")
+        # ОТЛАДКА status_msg
+        logging.info("===== STATUS_MSG ATTRIBUTES =====")
+        logging.info(f"Тип status_msg: {type(status_msg)}")
+        logging.info(f"Атрибуты status_msg: {dir(status_msg)}")
+        if hasattr(status_msg, 'recipient'):
+            logging.info(f"recipient атрибуты: {dir(status_msg.recipient)}")
+        if hasattr(status_msg, 'chat'):
+            logging.info(f"chat атрибуты: {dir(status_msg.chat)}")
    
 
         # Получаем метаданные
@@ -309,6 +309,7 @@ async def handle_message(event: MessageCreated):
         )
 
         # Удаляем статус
+        # Пока используем chat.id, но после отладки может измениться
         await bot.delete_message(status_msg.chat.id, status_msg.message_id)
 
         # Удаляем файл с диска
