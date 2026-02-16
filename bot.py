@@ -112,11 +112,12 @@ def remove_subscription(user_id: int):
     conn.close()
 
 # ----------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------------
-def format_duration(seconds: int) -> str:
-    """Форматирует длительность в ЧЧ:ММ:СС или ММ:СС."""
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
+def format_duration(seconds: float) -> str:
+    """Форматирует длительность в ЧЧ:ММ:СС или ММ:СС, принимает float."""
+    total_seconds = int(seconds)  # преобразуем в целое
+    h = total_seconds // 3600
+    m = (total_seconds % 3600) // 60
+    s = total_seconds % 60
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     else:
