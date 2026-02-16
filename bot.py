@@ -313,12 +313,12 @@ async def handle_message(event: MessageCreated):
                    f"🔗 {info['webpage_url']}")
         
         try:
-            # 1. Загружаем файл (передаём открытый файл позиционно)
-            with open(file_path, 'rb') as f:
-                upload_result = await bot.upload_file(f)
+            # 1. Загружаем файл, передаём путь и тип (скорее всего 'video')
+            file_type = 'video'  # для видео
+            upload_result = await bot.upload_file(file_path, file_type)
             logging.info(f"✅ Файл загружен, результат: {upload_result}")
             
-            # 2. Извлекаем file_id (может быть строка или объект с полем file_id)
+            # 2. Извлекаем file_id (может быть строкой или объектом)
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
