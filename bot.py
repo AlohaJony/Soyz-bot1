@@ -306,46 +306,38 @@ async def handle_message(event: MessageCreated):
             await status_msg.message.edit("❌ Не удалось скачать видео. Возможно, видео защищено или недоступно.")
             return
 
-                # Отправляем видео
+        # Отправляем видео
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
                    f"⏱ {format_duration(duration)}\n"
                    f"🔗 {info['webpage_url']}")
         
-        # ОТЛАДКА: выводим доступные методы для поиска правильного способа отправки файла
-        logging.info("===== ПОИСК МЕТОДА ДЛЯ ОТПРАВКИ ФАЙЛА =====")
-        logging.info(f"Методы bot (без _): {[m for m in dir(bot) if not m.startswith('_')]}")
-        logging.info(f"Методы event.message (без _): {[m for m in dir(event.message) if not m.startswith('_')]}")
-        
-        # Пробуем отправить файл через bot.send_file (предположительный метод)
         try:
+            # 1. Загружаем файл
             with open(file_path, 'rb') as f:
-                await bot.send_file(
-                    chat_id=event.message.recipient.chat_id,
-                    file=f,
-                    caption=caption
-                )
-            logging.info("✅ Файл отправлен через bot.send_file")
-        except AttributeError as e:
-            logging.error(f"❌ bot.send_file не сработал: {e}")
-            # Пробуем через bot.send_video
-            try:
-                with open(file_path, 'rb') as f:
-                    await bot.send_video(
-                        chat_id=event.message.recipient.chat_id,
-                        video=f,
-                        caption=caption
-                    )
-                logging.info("✅ Файл отправлен через bot.send_video")
-            except AttributeError as e:
-                logging.error(f"❌ bot.send_video тоже не сработал: {e}")
-                # Если ничего не помогло, выводим все методы bot (полный список)
-                logging.error(f"Полный список методов bot: {dir(bot)}")
-                await event.message.answer("❌ Не удалось отправить видео. Ошибка отправки.")
-                return
+                upload_result = await bot.upload_file(file=f)
+            logging.info(f"✅ Файл загружен, результат: {upload_result}")
+            
+            # 2. Извлекаем file_id (предполагаем, что он есть в ответе)
+            if hasattr(upload_result, 'file_id'):
+                file_id = upload_result.file_id
+            elif isinstance(upload_result, dict) and 'file_id' in upload_result:
+                file_id = upload_result['file_id']
+            else:
+                # Если вернулась просто строка — считаем её file_id
+                file_id = str(upload_result)
+            
+            # 3. Отправляем сообщение с файлом
+            await bot.send_message(
+                chat_id=event.message.recipient.chat_id,
+                text=caption,
+                file_id=file_id
+            )
+            logging.info("✅ Видео отправлено через send_message с file_id")
+            
         except Exception as e:
-            logging.error(f"🔥 Другая ошибка при отправке: {e}")
-            await event.message.answer("❌ Не удалось отправить видео. Ошибка.")
+            logging.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
+            await status_msg.message.edit("❌ Не удалось отправить видео. Ошибка.")
             return
 
         # Удаляем статусное сообщение
