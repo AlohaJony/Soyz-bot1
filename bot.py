@@ -4,6 +4,8 @@ import os
 import re
 import sqlite3
 import subprocess  # <-- добавьте этот импорт, если его нет
+import aiohttp
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +21,33 @@ class UploadType(Enum):
     DOCUMENT = 'document'
     IMAGE = 'image'
     # При необходимости можно добавить AUDIO и т.д.
+
+async def upload_to_catbox(file_path: str) -> str | None:
+    """Загружает файл на catbox.moe и возвращает прямую ссылку."""
+    url = "https://catbox.moe/user/api.php"
+    try:
+        with open(file_path, 'rb') as f:
+            data = aiohttp.FormData()
+            data.add_field('reqtype', 'fileupload')
+            data.add_field('fileToUpload', f, filename=os.path.basename(file_path))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data) as resp:
+                    if resp.status == 200:
+                        result = await resp.text()
+                        # catbox возвращает просто URL
+                        if result.startswith('http'):
+                            logger.info(f"✅ Файл загружен на catbox: {result}")
+                            return result.strip()
+                        else:
+                            logger.error(f"catbox вернул неожиданный ответ: {result}")
+                            return None
+                    else:
+                        logger.error(f"Ошибка загрузки на catbox: HTTP {resp.status}")
+                        return None
+    except Exception as e:
+        logger.error(f"Исключение при загрузке на catbox: {e}")
+        return None   
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
 ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
@@ -165,6 +194,32 @@ async def download_video(url: str) -> str | None:
         return result
     except Exception as e:
         logger.error(f"🔥 Ошибка в download_video: {e}", exc_info=True)
+        return None
+    
+async def upload_to_catbox(file_path: str) -> str | None:
+    """Загружает файл на catbox.moe и возвращает прямую ссылку."""
+    url = "https://catbox.moe/user/api.php"
+    try:
+        with open(file_path, 'rb') as f:
+            data = aiohttp.FormData()
+            data.add_field('reqtype', 'fileupload')
+            data.add_field('fileToUpload', f, filename=os.path.basename(file_path))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=data) as resp:
+                    if resp.status == 200:
+                        result = await resp.text()
+                        if result.startswith('http'):
+                            logger.info(f"✅ Файл загружен на catbox: {result}")
+                            return result.strip()
+                        else:
+                            logger.error(f"catbox вернул неожиданный ответ: {result}")
+                            return None
+                    else:
+                        logger.error(f"Ошибка загрузки на catbox: HTTP {resp.status}")
+                        return None
+    except Exception as e:
+        logger.error(f"Исключение при загрузке на catbox: {e}")
         return None
 
 def _sync_download(url: str, ydl_opts: dict) -> str | None:
@@ -315,6 +370,8 @@ async def handle_message(event: MessageCreated):
             await status_msg.message.edit("❌ Не удалось скачать видео. Возможно, видео защищено или недоступно.")
             return
 
+
+
         # Отправляем видео
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
@@ -324,28 +381,48 @@ async def handle_message(event: MessageCreated):
         try:
             file_type = UploadType.VIDEO
             logger.info(f"file_path: {file_path}, file_type: {file_type}")
-            
-            # Повторные попытки загрузки
-            max_retries = 3
+
+            # Попытки загрузки на MAX (5 раз)
+            max_retries = 5
             retry_delay = 5
+            upload_success = False
+            upload_result = None
+
             for attempt in range(1, max_retries + 1):
                 try:
                     upload_result = await bot.upload_file('', file_path, file_type)
-                    logger.info(f"✅ Файл загружен, результат: {upload_result}")
-                    
+                    logger.info(f"✅ Попытка {attempt}: файл загружен на MAX, результат: {upload_result}")
+
+                    # Проверяем, не вернулась ли HTML-страница с 502
                     if isinstance(upload_result, str) and '<html' in upload_result.lower() and '502' in upload_result:
                         raise Exception("Ошибка загрузки на сервер MAX (502)")
-                    
+
+                    upload_success = True
                     break  # успех
                 except Exception as e:
-                    logger.warning(f"Попытка {attempt} не удалась: {e}")
+                    logger.warning(f"Попытка {attempt} загрузки на MAX не удалась: {e}")
                     if attempt == max_retries:
-                        raise
+                        logger.warning("Все попытки загрузки на MAX провалились.")
+                        break
                     await asyncio.sleep(retry_delay)
-            else:
-                raise Exception("Не удалось загрузить файл после нескольких попыток")
-            
-            # Извлекаем file_id (как раньше)
+
+            # Если не удалось загрузить на MAX – пробуем catbox
+            if not upload_success:
+                logger.info("Пробуем загрузить на catbox.moe...")
+                catbox_url = await upload_to_catbox(file_path)
+                if catbox_url:
+                    await status_msg.message.edit("⚠️ Видео не удалось загрузить на сервер MAX из-за технических проблем, но вы можете скачать его по ссылке (ссылка действительна 1 день):")
+                    await event.message.answer(f"🔗 [Скачать видео]({catbox_url})")
+                    # Очищаем файл и статус
+                    Path(file_path).unlink(missing_ok=True)
+                    await status_msg.message.delete()
+                    return
+                else:
+                    await status_msg.message.edit("❌ Не удалось загрузить видео ни на MAX, ни на запасной сервер. Попробуйте позже.")
+                    Path(file_path).unlink(missing_ok=True)
+                    return
+
+            # Если загрузка на MAX успешна – извлекаем file_id
             if isinstance(upload_result, str):
                 file_id = upload_result
             elif hasattr(upload_result, 'file_id'):
@@ -355,39 +432,22 @@ async def handle_message(event: MessageCreated):
             else:
                 file_id = str(upload_result)
                 logger.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
-            
-            # Отправляем сообщение с файлом (пробуем разные варианты)
+
+            # Отправляем сообщение с файлом (перебираем варианты)
             sent = False
             chat_id = event.message.recipient.chat_id
-            
-            # Способ 1: параметр file_id
-            try:
-                await bot.send_message(chat_id, caption, file_id=file_id)
-                logger.info("✅ Отправлено через file_id")
-                sent = True
-            except TypeError:
-                pass
-            
-            if not sent:
-                # Способ 2: параметр media
+
+            for param in ['file_id', 'media', 'attachment']:
+                if sent:
+                    break
                 try:
-                    await bot.send_message(chat_id, caption, media=file_id)
-                    logger.info("✅ Отправлено через media")
+                    await bot.send_message(chat_id, caption, **{param: file_id})
+                    logger.info(f"✅ Отправлено через {param}")
                     sent = True
                 except TypeError:
-                    pass
-            
+                    continue
+
             if not sent:
-                # Способ 3: параметр attachment
-                try:
-                    await bot.send_message(chat_id, caption, attachment=file_id)
-                    logger.info("✅ Отправлено через attachment")
-                    sent = True
-                except TypeError:
-                    pass
-            
-            if not sent:
-                # Способ 4: отдельные методы
                 if hasattr(bot, 'send_video'):
                     await bot.send_video(chat_id, file_id, caption=caption)
                     logger.info("✅ Отправлено через send_video")
@@ -396,13 +456,30 @@ async def handle_message(event: MessageCreated):
                     await bot.send_document(chat_id, file_id, caption=caption)
                     logger.info("✅ Отправлено через send_document")
                     sent = True
-            
+
             if not sent:
                 raise Exception("Не удалось отправить видео ни одним из способов")
-            
+
+            # Удаляем статусное сообщение и файл
+            await status_msg.message.delete()
+            Path(file_path).unlink(missing_ok=True)
+
+            # Отправляем описание (если есть) и сообщение о поддержке
+            if info['description']:
+                desc = info['description'][:4000]
+                await event.message.answer(f"📝 Описание:\n\n{desc}")
+            await event.message.answer(
+                "❤️ Если вам понравился бот, поддержите проект:\n"
+                "💸 [Ссылка на донат](https://donate.example.com)\n"
+                "Спасибо!"
+            )
+
         except Exception as e:
-            logger.error(f"❌ Ошибка при отправке видео: {e}", exc_info=True)
-            await status_msg.message.edit(f"❌ Не удалось отправить видео. {str(e)}")
+            logger.error(f"❌ Критическая ошибка при отправке видео: {e}", exc_info=True)
+            await status_msg.message.edit(f"❌ Не удалось отправить видео. Попробуйте позже.")
+            # Если файл остался, удаляем
+            if 'file_path' in locals() and Path(file_path).exists():
+                Path(file_path).unlink(missing_ok=True)
             return
 
         # Удаляем статусное сообщение
