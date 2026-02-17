@@ -1,3 +1,5 @@
 https://github.com/love-apples/maxapi/archive/main.zip
 yt-dlp
 aiohttp
+maxapi
+filestack-python
