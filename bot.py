@@ -22,46 +22,31 @@ class UploadType(Enum):
     IMAGE = 'image'
     # При необходимости можно добавить AUDIO и т.д.
 
-async def upload_to_gofile(file_path: str) -> str | None:
+async def upload_to_filestack(file_path: str) -> str | None:
     """
-    Загружает файл на gofile.io и возвращает прямую ссылку на скачивание.
+    Загружает файл на Filestack и возвращает прямую ссылку.
+    Требует наличия переменной окружения FILESTACK_API_KEY.
     """
-    logger.info(f"📤 gofile.io: начало загрузки {file_path}")
-
-    # 1. Получаем доступный сервер для загрузки [citation:2]
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://api.gofile.io/servers') as resp:
-                if resp.status != 200:
-                    logger.error(f"Ошибка получения сервера: HTTP {resp.status}")
-                    return None
-                data = await resp.json()
-                if data['status'] != 'ok':
-                    logger.error(f"API вернул ошибку: {data}")
-                    return None
-                # Берём первый доступный сервер из списка
-                server = data['data']['servers'][0]['name']
-                logger.info(f"Выбран сервер: {server}")
-    except Exception as e:
-        logger.error(f"Исключение при получении сервера: {e}")
+    api_key = os.getenv('AZndAZJ6dRdSWdUGvXg0Bz')
+    if not api_key:
+        logger.error("❌ Не задан FILESTACK_API_KEY в переменных окружения")
         return None
 
-    # 2. Загружаем файл на выбранный сервер [citation:2][citation:6]
-    upload_url = f"https://{server}.gofile.io/uploadFile"
-    try:
-        with open(file_path, 'rb') as f:
-            data = aiohttp.FormData()
-            data.add_field('file', f, filename=os.path.basename(file_path))
+    logger.info(f"📤 Filestack: начало загрузки {file_path}")
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(upload_url, data=data) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Ошибка загрузки: HTTP {resp.status}")
-                        return None
-                    result = await resp.json()
-                    if result['status'] != 'ok':
-                        logger.error(f"API загрузки вернул ошибку: {result}")
-                        return None
+    try:
+        # Инициализируем клиента (синхронная библиотека, запускаем в потоке)
+        loop = asyncio.get_running_loop()
+        filelink = await loop.run_in_executor(
+            None,
+            lambda: filestack.Client(api_key).upload(filepath=file_path)
+        )
+        # filelink.url — это прямая ссылка на файл (например, https://cdn.filestackcontent.com/ABC123)
+        logger.info(f"✅ Файл загружен на Filestack: {filelink.url}")
+        return filelink.url
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки на Filestack: {e}", exc_info=True)
+        return None
 
                     # Извлекаем ссылку на скачивание [citation:6]
                     download_page = result['data']['downloadPage']
@@ -454,30 +439,28 @@ async def handle_message(event: MessageCreated):
                         break
                     await asyncio.sleep(retry_delay)
 
-            # Если не удалось загрузить на MAX – пробуем catbox
+            # Если не удалось загрузить на MAX – пробуем filestack
             if not upload_success:
-                logger.info("Пробуем загрузить на gofile.io...")
-                gofile_url = await upload_to_gofile(file_path)
-                
-                if gofile_url:
-                    # Успешно загружено на gofile
+                logger.info("Пробуем загрузить на Filestack (резервный сервер)...")
+                filestack_url = await upload_to_filestack(file_path)
+
+                if filestack_url:
                     await event.message.answer(
                         "⚠️ *Сервер MAX временно недоступен (ошибка 502).*\n"
-                        "🎥 Видео загружено на запасной файлообменник gofile.io.\n"
-                        f"🔗 [Скачать видео]({gofile_url})\n"
-                        "Ссылка действительна постоянно."
+                        "🎥 Видео загружено на резервный сервер Filestack.\n"
+                        f"🔗 [Скачать видео]({filestack_url})\n"
+                        "Ссылка постоянная."
                     )
-                    logger.info("✅ Сообщение со ссылкой gofile отправлено")
+                    logger.info("✅ Сообщение со ссылкой Filestack отправлено")
                 else:
-                    # gofile тоже не сработал
-                    logger.error("gofile.io не ответил или вернул ошибку")
+                    logger.error("Filestack тоже не сработал")
                     await event.message.answer(
                         "❌ К сожалению, сервер MAX временно недоступен (502), "
-                        "и запасной файлообменник тоже не отвечает.\n"
-                        "Пожалуйста, попробуйте позже или обратитесь к администратору."
+                        "и резервный сервер тоже не отвечает.\n"
+                        "Пожалуйста, попробуйте позже."
                     )
-                
-                # В любом случае очищаем файл и статус
+
+                # Очистка
                 Path(file_path).unlink(missing_ok=True)
                 await status_msg.message.delete()
                 return
