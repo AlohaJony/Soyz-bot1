@@ -6,6 +6,7 @@ import sqlite3
 import subprocess  # <-- добавьте этот импорт, если его нет
 import aiohttp
 import os
+import filestack
 from datetime import datetime, timedelta
 from pathlib import Path
 
