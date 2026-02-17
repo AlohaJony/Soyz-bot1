@@ -2,63 +2,17 @@ import asyncio
 import logging
 import os
 import re
-import sqlite3
-import subprocess  # <-- добавьте этот импорт, если его нет
 import aiohttp
-import os
-import filestack
-from datetime import datetime, timedelta
-from pathlib import Path
-
 import yt_dlp
-from maxapi import Bot, Dispatcher
-from maxapi.types import MessageCreated
+from pathlib import Path
+from urllib.parse import urlparse
 
-from enum import Enum
-
-# Создаём свой UploadType, так как библиотека не экспортирует его
-class UploadType(Enum):
-    VIDEO = 'video'
-    DOCUMENT = 'document'
-    IMAGE = 'image'
-    # При необходимости можно добавить AUDIO и т.д.
-
-async def upload_to_filestack(file_path: str) -> str | None:
-    """
-    Загружает файл на Filestack и возвращает прямую ссылку.
-    Требует наличия переменной окружения FILESTACK_API_KEY.
-    """
-    api_key = 'AZndAZJ6dRdSWdUGvXg0Bz'
-    if not api_key:
-        logger.error("❌ Не задан FILESTACK_API_KEY в переменных окружения")
-        return None
-
-    logger.info(f"📤 Filestack: начало загрузки {file_path}")
-
-    try:
-        # Инициализируем клиента (синхронная библиотека, запускаем в потоке)
-        loop = asyncio.get_running_loop()
-        filelink = await loop.run_in_executor(
-            None,
-            lambda: filestack.Client(api_key).upload(filepath=file_path)
-        )
-        logger.info(f"✅ Файл загружен на Filestack: {filelink.url}")
-        return filelink.url
-    except Exception as e:
-        logger.error(f"❌ Ошибка загрузки на Filestack: {e}", exc_info=True)
-        return None
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', 0))
+if not TOKEN:
+    raise ValueError("Не задан BOT_TOKEN в переменных окружения")
 
-# Стоимость подписок
-SUBSCRIPTION_PRICES = {
-    'week': 200,
-    'month': 599
-}
-
-FREE_LIMIT_SECONDS = 10 * 60
-DB_PATH = 'subscriptions.db'
+# Папка для скачанных файлов
 DOWNLOAD_DIR = 'downloads'
 Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
 
@@ -66,483 +20,327 @@ Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------------- УСТАНОВКА FFMPEG (если нужно) -----------------------------
-def install_ffmpeg():
-    """Пытается установить ffmpeg, если его нет (для Debian/Ubuntu)."""
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        logger.info("✅ ffmpeg уже установлен")
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.info("📦 ffmpeg не найден, пытаюсь установить...")
-        try:
-            subprocess.run(["apt-get", "update"], check=True, timeout=60)
-            subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True, timeout=120)
-            logger.info("✅ ffmpeg успешно установлен")
-        except Exception as e:
-            logger.error(f"❌ Не удалось установить ffmpeg: {e}")
-            logger.warning("⚠️ Продолжаю без ffmpeg. Некоторые видео могут не скачиваться (требуется объединение потоков).")
-
-# Вызываем функцию
-install_ffmpeg()
-
-# ----------------------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------------------
-# ... (дальше идут ваши функции init_db, get_subscription и т.д.)
-
-# ----------------------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------------------
-def init_db():
-    """Создаёт таблицу подписок, если её нет."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS subscriptions (
-            user_id INTEGER PRIMARY KEY,
-            expires_at TIMESTAMP,
-            subscribed_since TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def get_subscription(user_id: int):
-    """Возвращает дату окончания подписки или None."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('SELECT expires_at FROM subscriptions WHERE user_id = ?', (user_id,))
-    row = c.fetchone()
-    conn.close()
-    if row and row[0]:
-        try:
-            expires = datetime.fromisoformat(row[0])
-            if expires > datetime.now():
-                return expires
-        except:
-            pass
-    return None
-
-def add_subscription(user_id: int, duration_days: int):
-    """Добавляет или продлевает подписку."""
-    expires = datetime.now() + timedelta(days=duration_days)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO subscriptions (user_id, expires_at)
-        VALUES (?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET expires_at = ?
-    ''', (user_id, expires.isoformat(), expires.isoformat()))
-    conn.commit()
-    conn.close()
-
-def remove_subscription(user_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM subscriptions WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
 # ----------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------------
 def format_duration(seconds: float) -> str:
     """Форматирует длительность в ЧЧ:ММ:СС или ММ:СС, принимает float."""
-    total_seconds = int(seconds)  # преобразуем в целое
+    total_seconds = int(seconds)
     h = total_seconds // 3600
     m = (total_seconds % 3600) // 60
     s = total_seconds % 60
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
-    else:
-        return f"{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
-def extract_video_info(url: str) -> dict | None:
-    """Извлекает информацию о видео через yt-dlp."""
+def extract_info(url: str) -> dict | None:
+    """
+    Извлекает информацию о контенте через yt-dlp.
+    Возвращает словарь с ключами:
+        - type: 'single' или 'playlist'
+        - title: общий заголовок
+        - entries: список записей (для playlist)
+        - для single: duration, uploader, description, webpage_url, ext, thumbnail
+    """
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'skip_download': True,  # не скачиваем, только получаем метаданные
+        'skip_download': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-            return {
-                'title': info.get('title', 'Без названия'),
-                'uploader': info.get('uploader', 'Неизвестный автор'),
-                'duration': info.get('duration', 0),
-                'description': info.get('description', ''),
-                'webpage_url': info.get('webpage_url', url),
-                'extractor': info.get('extractor', 'unknown'),
-            }
+            if 'entries' in info:  # Это плейлист (пост с несколькими медиа)
+                entries = []
+                for entry in info['entries']:
+                    if entry is None:
+                        continue
+                    entries.append({
+                        'title': entry.get('title', 'Без названия'),
+                        'duration': entry.get('duration', 0),
+                        'uploader': entry.get('uploader', 'Неизвестный автор'),
+                        'description': entry.get('description', ''),
+                        'webpage_url': entry.get('webpage_url', url),
+                        'ext': entry.get('ext', 'mp4'),
+                        'thumbnail': entry.get('thumbnail'),
+                    })
+                return {
+                    'type': 'playlist',
+                    'title': info.get('title', 'Пост'),
+                    'entries': entries,
+                    'webpage_url': url
+                }
+            else:  # Одиночное видео/изображение
+                return {
+                    'type': 'single',
+                    'title': info.get('title', 'Без названия'),
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', 'Неизвестный автор'),
+                    'description': info.get('description', ''),
+                    'webpage_url': info.get('webpage_url', url),
+                    'ext': info.get('ext', 'mp4'),
+                    'thumbnail': info.get('thumbnail'),
+                }
         except Exception as e:
             logger.error(f"Ошибка получения информации: {e}")
             return None
 
-async def download_video(url: str) -> str | None:
-    """Скачивает видео и возвращает путь к файлу."""
+async def download_file(url: str, file_id: str, ext: str) -> str | None:
+    """
+    Скачивает файл по URL, сохраняет в DOWNLOAD_DIR/{file_id}.{ext}
+    Возвращает путь к файлу или None.
+    """
+    filename = f"{file_id}.{ext}"
+    file_path = Path(DOWNLOAD_DIR) / filename
+    if file_path.exists():
+        return str(file_path)
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
-        'quiet': False,          # Включаем вывод yt-dlp
-        'no_warnings': False,
-        'verbose': True,         # Максимально подробно
+        'format': 'best[ext=mp4]/best' if ext in ['mp4', 'mov', 'avi'] else 'best',
+        'outtmpl': str(file_path),
+        'quiet': True,
+        'no_warnings': True,
     }
     try:
-        # Проверяем, доступна ли папка для записи
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-        logger.info(f"📥 Начинаю скачивание: {url}")
-
-        # Запускаем yt-dlp в отдельном потоке, чтобы не блокировать event loop
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, lambda: _sync_download(url, ydl_opts))
-        return result
-    except Exception as e:
-        logger.error(f"🔥 Ошибка в download_video: {e}", exc_info=True)
-        return None
-    
-async def upload_to_gofile(file_path: str) -> str | None:
-    """
-    Загружает файл на gofile.io и возвращает прямую ссылку на скачивание.
-    """
-    logger.info(f"📤 gofile.io: начало загрузки {file_path}")
-
-    # 1. Получаем доступный сервер для загрузки 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://api.gofile.io/servers') as resp:
-                if resp.status != 200:
-                    logger.error(f"Ошибка получения сервера: HTTP {resp.status}")
-                    return None
-                data = await resp.json()
-                if data['status'] != 'ok':
-                    logger.error(f"API вернул ошибку: {data}")
-                    return None
-                # Берём первый доступный сервер из списка
-                server = data['data']['servers'][0]['name']
-                logger.info(f"Выбран сервер: {server}")
-    except Exception as e:
-        logger.error(f"Исключение при получении сервера: {e}")
-        return None
-
-    # 2. Загружаем файл на выбранный сервер 
-    upload_url = f"https://{server}.gofile.io/uploadFile"
-    try:
-        with open(file_path, 'rb') as f:
-            data = aiohttp.FormData()
-            data.add_field('file', f, filename=os.path.basename(file_path))
-
-            async with aiohttp.ClientSession() as session:
-                async with session.post(upload_url, data=data) as resp:
-                    if resp.status != 200:
-                        logger.error(f"Ошибка загрузки: HTTP {resp.status}")
-                        return None
-                    result = await resp.json()
-                    if result['status'] != 'ok':
-                        logger.error(f"API загрузки вернул ошибку: {result}")
-                        return None
-
-                    # Извлекаем ссылку на скачивание 
-                    download_page = result['data']['downloadPage']
-                    logger.info(f"✅ Файл загружен на gofile.io: {download_page}")
-                    return download_page
-
-    except Exception as e:
-        logger.error(f"Исключение при загрузке на gofile.io: {e}", exc_info=True)
-        return Noneor(f"Исключение при загрузке на catbox: {e}")
-        return None
-
-def _sync_download(url: str, ydl_opts: dict) -> str | None:
-    """Синхронная функция для запуска в executor."""
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if Path(filename).exists():
-                logger.info(f"✅ Файл скачан: {filename}")
-                return filename
-            # Ищем по ID
-            for f in Path(DOWNLOAD_DIR).glob(f"{info['id']}.*"):
-                logger.info(f"✅ Найден альтернативный файл: {f}")
-                return str(f)
-            logger.error("❌ Файл не найден после скачивания")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Ошибка в _sync_download: {e}", exc_info=True)
-            return None
-        
-# ----------------------------- ИНИЦИАЛИЗАЦИЯ БОТА -----------------------------
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-
-# ----------------------------- ОБРАБОТЧИКИ КОМАНД -----------------------------
-@dp.message_created()
-async def handle_message(event: MessageCreated):
-    user_id = event.message.sender.user_id
-    text = event.message.body.text or ''
-    text_lower = text.lower().strip()
-
-    # Команда /start
-    if text_lower == '/start':
-        await event.message.answer(
-            "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и TikTok.\n\n"
-            "📥 Просто отправь мне ссылку на видео.\n"
-            "🔒 Если видео длится больше 10 минут, для скачивания нужна подписка.\n"
-            "💳 Набери /subscribe, чтобы узнать условия."
-        )
-        return
-
-    # Команда /subscribe
-    if text_lower == '/subscribe':
-        sub = get_subscription(user_id)
-        if sub:
-            days_left = (sub - datetime.now()).days
-            msg = f"✅ У вас активна подписка до {sub.strftime('%d.%m.%Y')} (осталось {days_left} дн.)"
-        else:
-            msg = "❌ У вас нет активной подписки.\n\n"
-        msg += (
-            f"💰 Тарифы:\n"
-            f"• Неделя — {SUBSCRIPTION_PRICES['week']} руб.\n"
-            f"• Месяц — {SUBSCRIPTION_PRICES['month']} руб.\n\n"
-            f"Для оплаты отправьте /payweek или /paymonth.\n"
-            f"После оплаты пришлите скриншот администратору @your_admin (замени на свой контакт)."
-        )
-        await event.message.answer(msg)
-        return
-
-    # Команды оплаты (заглушка)
-    if text_lower == '/payweek':
-        await event.message.answer(
-            f"💳 Для оплаты недельной подписки ({SUBSCRIPTION_PRICES['week']} руб.) переведите сумму на карту:\n"
-            f"`1234 5678 9012 3456`\n"
-            f"(укажите в комментарии ваш ID: {user_id})\n\n"
-            f"После оплаты отправьте скриншот администратору."
-        )
-        return
-
-    if text_lower == '/paymonth':
-        await event.message.answer(
-            f"💳 Для оплаты месячной подписки ({SUBSCRIPTION_PRICES['month']} руб.) переведите сумму на карту:\n"
-            f"`1234 5678 9012 3456`\n"
-            f"(укажите в комментарии ваш ID: {user_id})\n\n"
-            f"После оплаты отправьте скриншот администратору."
-        )
-        return
-
-    # Команда администратора для активации подписки (скрытая)
-    if text_lower.startswith('/activate') and event.message.sender.user_id == ADMIN_ID:
-        parts = text.split()
-        if len(parts) == 3:
-            try:
-                target_id = int(parts[1])
-                days = int(parts[2])
-                add_subscription(target_id, days)
-                await event.message.answer(f"✅ Подписка для {target_id} активирована на {days} дней.")
-            except:
-                await event.message.answer("❌ Ошибка. Используй: /activate USER_ID DAYS")
-        else:
-            await event.message.answer("❌ Неверный формат. /activate USER_ID DAYS")
-        return
-
-    # Обработка ссылок
-    if 'http://' in text or 'https://' in text:
-        # Извлекаем первую ссылку
-        urls = re.findall(r'https?://\S+', text)
-        if not urls:
-            await event.message.answer("❌ Не удалось найти ссылку.")
-            return
-        url = urls[0]
-
-        # Отправляем статус
-        status_msg = await event.message.answer("🔍 Получаю информацию о видео...")
-
-        # (Опционально: отладка структуры status_msg, можно раскомментировать при необходимости)
-        # logging.info("===== STATUS_MSG ATTRIBUTES =====")
-        # logging.info(f"Тип status_msg: {type(status_msg)}")
-        # logging.info(f"Атрибуты status_msg: {dir(status_msg)}")
-        # if hasattr(status_msg, 'message'):
-        #     logging.info(f"Тип status_msg.message: {type(status_msg.message)}")
-        #     logging.info(f"Атрибуты status_msg.message: {dir(status_msg.message)}")
-        #     if hasattr(status_msg.message, 'recipient'):
-        #         logging.info(f"message.recipient атрибуты: {dir(status_msg.message.recipient)}")
-        #         if hasattr(status_msg.message.recipient, 'chat_id'):
-        #             logging.info(f"message.recipient.chat_id = {status_msg.message.recipient.chat_id}")
-
-        # Получаем метаданные
-        info = await asyncio.to_thread(extract_video_info, url)
-        if not info:
-            await status_msg.message.edit("❌ Не удалось получить информацию о видео. Проверьте ссылку.")
-            return
-
-        # Проверяем длительность
-        duration = info['duration']
-        if duration > FREE_LIMIT_SECONDS:
-            sub = get_subscription(user_id)
-            if not sub:
-                await status_msg.message.edit(
-                    f"⏱ Видео длится {format_duration(duration)} (больше 10 минут).\n"
-                    f"🔒 Для скачивания длинных видео нужна подписка.\n"
-                    f"Наберите /subscribe для оформления."
-                )
-                return
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+            if file_path.exists():
+                logger.info(f"✅ Файл скачан: {file_path}")
+                return str(file_path)
             else:
-                await status_msg.message.edit(
-                    f"⏱ Длительность: {format_duration(duration)}. Подписка активна, скачиваю..."
-                )
-        else:
-            await status_msg.message.edit(
-                f"⏱ Длительность: {format_duration(duration)}. Скачиваю..."
-            )
+                logger.error("Файл не найден после скачивания")
+                return None
+    except Exception as e:
+        logger.error(f"Ошибка скачивания: {e}")
+        return None
 
-        # Скачиваем видео
-        file_path = await download_video(url)
-        if not file_path or not Path(file_path).exists():
-            await status_msg.message.edit("❌ Не удалось скачать видео. Возможно, видео защищено или недоступно.")
+# ----------------------------- РАБОТА С API MAX -----------------------------
+class MaxAPI:
+    def __init__(self, token: str):
+        self.token = token
+        self.base_url = "https://platform-api.max.ru/v1"
+        self.headers = {"Authorization": f"Bearer {token}"}
+
+    async def _request(self, method: str, path: str, **kwargs):
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=self.headers, **kwargs) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    logger.error(f"MAX API error {resp.status}: {text}")
+                    raise Exception(f"MAX API error: {resp.status}")
+                if resp.status == 204:
+                    return None
+                return await resp.json()
+
+    async def get_upload_url(self, media_type: str) -> str:
+        """Запрашивает URL для загрузки файла. media_type: 'image' или 'video'"""
+        data = await self._request('POST', f'uploads?type={media_type}')
+        return data['url']
+
+    async def upload_file(self, upload_url: str, file_path: str) -> str:
+        """Загружает файл на полученный URL, возвращает токен файла."""
+        with open(file_path, 'rb') as f:
+            form = aiohttp.FormData()
+            form.add_field('data', f, filename=os.path.basename(file_path))
+            async with aiohttp.ClientSession() as session:
+                async with session.post(upload_url, data=form) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"Upload failed: {resp.status} {text}")
+                        raise Exception(f"Upload failed: {resp.status}")
+                    result = await resp.json()
+                    return result['token']
+
+    async def send_message(self, chat_id: int, text: str, attachments: list = None):
+        """Отправляет сообщение в чат."""
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "attachments": attachments or []
+        }
+        return await self._request('POST', 'messages', json=payload)
+
+    async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
+        """Загружает файл и отправляет его как медиа."""
+        # 1. Получаем URL для загрузки
+        upload_url = await self.get_upload_url(media_type)
+        # 2. Загружаем файл
+        token = await self.upload_file(upload_url, file_path)
+        # 3. Формируем вложение
+        attachment = {
+            "type": media_type,
+            "payload": {"token": token}
+        }
+        # 4. Отправляем сообщение с вложением
+        return await self.send_message(chat_id, caption, [attachment])
+
+# ----------------------------- ОБРАБОТЧИК СООБЩЕНИЙ -----------------------------
+async def handle_url(event, url: str):
+    """Основная логика обработки ссылки."""
+    chat_id = event.message.recipient.chat_id
+    status_msg = await event.message.answer("🔍 Получаю информацию...")
+
+    # Получаем информацию о контенте
+    info = await asyncio.to_thread(extract_info, url)
+    if not info:
+        await status_msg.message.edit("❌ Не удалось получить информацию о контенте. Проверьте ссылку.")
+        return
+
+    await status_msg.message.edit("📥 Начинаю загрузку...")
+
+    max_api = MaxAPI(TOKEN)
+
+    if info['type'] == 'single':
+        # Одиночное видео/изображение
+        ext = info.get('ext', 'mp4')
+        file_id = re.sub(r'\W+', '', info['title'][:30])  # простой идентификатор
+        file_path = await download_file(info['webpage_url'], file_id, ext)
+        if not file_path:
+            await status_msg.message.edit("❌ Не удалось скачать файл.")
             return
 
-
-
-        # Отправляем видео
+        # Определяем тип медиа
+        media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
-                   f"⏱ {format_duration(duration)}\n"
+                   f"⏱ {format_duration(info['duration'])}\n"
                    f"🔗 {info['webpage_url']}")
-        
+
+        # Отправляем через MAX API
         try:
-            file_type = UploadType.VIDEO
-            logger.info(f"file_path: {file_path}, file_type: {file_type}")
-
-            # Попытки загрузки на MAX (5 раз)
-            max_retries = 5
-            retry_delay = 5
-            upload_success = False
-            upload_result = None
-
-            for attempt in range(1, max_retries + 1):
-                try:
-                    upload_result = await bot.upload_file('', file_path, file_type)
-                    logger.info(f"✅ Попытка {attempt}: файл загружен на MAX, результат: {upload_result}")
-
-                    # Проверяем, не вернулась ли HTML-страница с 502
-                    if isinstance(upload_result, str) and '<html' in upload_result.lower() and '502' in upload_result:
-                        raise Exception("Ошибка загрузки на сервер MAX (502)")
-
-                    upload_success = True
-                    break  # успех
-                except Exception as e:
-                    logger.warning(f"Попытка {attempt} загрузки на MAX не удалась: {e}")
-                    if attempt == max_retries:
-                        logger.warning("Все попытки загрузки на MAX провалились.")
-                        break
-                    await asyncio.sleep(retry_delay)
-
-            # Если не удалось загрузить на MAX – пробуем filestack
-            if not upload_success:
-                logger.info("Пробуем загрузить на Filestack (резервный сервер)...")
-                filestack_url = await upload_to_filestack(file_path)
-
-                if filestack_url:
-                    await event.message.answer(
-                        "⚠️ *Сервер MAX временно недоступен (ошибка 502).*\n"
-                        "🎥 Видео загружено на резервный сервер Filestack.\n"
-                        f"🔗 [Скачать видео]({filestack_url})\n"
-                        "Ссылка постоянная."
-                    )
-                    logger.info("✅ Сообщение со ссылкой Filestack отправлено")
-                else:
-                    logger.error("Filestack тоже не сработал")
-                    await event.message.answer(
-                        "❌ К сожалению, сервер MAX временно недоступен (502), "
-                        "и резервный сервер тоже не отвечает.\n"
-                        "Пожалуйста, попробуйте позже."
-                    )
-
-                # Очистка
+            await max_api.send_media(chat_id, caption, file_path, media_type)
+            logger.info("✅ Медиа отправлено")
+        except Exception as e:
+            logger.error(f"Ошибка отправки через MAX: {e}")
+            # Fallback: пытаемся отправить как файл (документ)
+            try:
+                upload_url = await max_api.get_upload_url('file')
+                token = await max_api.upload_file(upload_url, file_path)
+                attachment = {"type": "file", "payload": {"token": token}}
+                await max_api.send_message(chat_id, caption, [attachment])
+                logger.info("✅ Файл отправлен как документ")
+            except Exception as e2:
+                logger.error(f"Fallback тоже не сработал: {e2}")
+                await status_msg.message.edit("❌ Не удалось отправить файл.")
                 Path(file_path).unlink(missing_ok=True)
-                await status_msg.message.delete()
                 return
 
-            # Если загрузка на MAX успешна – извлекаем file_id
-            if isinstance(upload_result, str):
-                file_id = upload_result
-            elif hasattr(upload_result, 'file_id'):
-                file_id = upload_result.file_id
-            elif isinstance(upload_result, dict) and 'file_id' in upload_result:
-                file_id = upload_result['file_id']
-            else:
-                file_id = str(upload_result)
-                logger.warning(f"⚠️ Неизвестный формат upload_result, используется как есть: {file_id}")
-
-            # Отправляем сообщение с файлом (перебираем варианты)
-            sent = False
-            chat_id = event.message.recipient.chat_id
-
-            for param in ['file_id', 'media', 'attachment']:
-                if sent:
-                    break
-                try:
-                    await bot.send_message(chat_id, caption, **{param: file_id})
-                    logger.info(f"✅ Отправлено через {param}")
-                    sent = True
-                except TypeError:
-                    continue
-
-            if not sent:
-                if hasattr(bot, 'send_video'):
-                    await bot.send_video(chat_id, file_id, caption=caption)
-                    logger.info("✅ Отправлено через send_video")
-                    sent = True
-                elif hasattr(bot, 'send_document'):
-                    await bot.send_document(chat_id, file_id, caption=caption)
-                    logger.info("✅ Отправлено через send_document")
-                    sent = True
-
-            if not sent:
-                raise Exception("Не удалось отправить видео ни одним из способов")
-
-            # Удаляем статусное сообщение и файл
-            await status_msg.message.delete()
-            Path(file_path).unlink(missing_ok=True)
-
-            # Отправляем описание (если есть) и сообщение о поддержке
-            if info['description']:
-                desc = info['description'][:4000]
-                await event.message.answer(f"📝 Описание:\n\n{desc}")
-            await event.message.answer(
-                "❤️ Если вам понравился бот, поддержите проект:\n"
-                "💸 [Ссылка на донат](https://donate.example.com)\n"
-                "Спасибо!"
-            )
-
-        except Exception as e:
-            logger.error(f"❌ Критическая ошибка при отправке видео: {e}", exc_info=True)
-            await status_msg.message.edit(f"❌ Не удалось отправить видео. Попробуйте позже.")
-            # Если файл остался, удаляем
-            if 'file_path' in locals() and Path(file_path).exists():
-                Path(file_path).unlink(missing_ok=True)
-            return
-
-        # Удаляем статусное сообщение
-        await status_msg.message.delete()
-
-        # Удаляем файл с диска
+        # Удаляем временный файл
         Path(file_path).unlink(missing_ok=True)
 
-        # Отправляем описание (если есть)
-        if info['description']:
+        # Отправляем описание, если есть
+        if info.get('description'):
             desc = info['description'][:4000]
             await event.message.answer(f"📝 Описание:\n\n{desc}")
 
-        # Сообщение о поддержке
-        await event.message.answer(
-            "❤️ Если вам понравился бот, поддержите проект:\n"
-            "💸 [Ссылка на донат](https://donate.example.com)\n"
-            "Спасибо!"
-        )
+    else:  # playlist
+        # Пост с несколькими медиа
+        await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Начинаю загрузку...")
+        tasks = []
+        for idx, entry in enumerate(info['entries']):
+            file_id = f"{re.sub(r'\W+', '', entry['title'][:20])}_{idx}"
+            ext = entry.get('ext', 'mp4')
+            tasks.append(download_file(entry['webpage_url'], file_id, ext))
 
-    else:
-        # Не ссылка и не команда
-        await event.message.answer("Отправьте мне ссылку на видео с YouTube, Instagram или TikTok.")
+        file_paths = await asyncio.gather(*tasks)
+        successful_paths = [p for p in file_paths if p]
+
+        if not successful_paths:
+            await status_msg.message.edit("❌ Не удалось скачать ни одного файла.")
+            return
+
+        await status_msg.message.edit(f"✅ Скачано {len(successful_paths)} файлов. Отправляю...")
+
+        # Отправляем каждый файл отдельным сообщением
+        for idx, file_path in enumerate(successful_paths):
+            ext = Path(file_path).suffix.lstrip('.')
+            media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
+            entry = info['entries'][idx]
+            caption = (f"📦 Файл {idx+1}/{len(successful_paths)}\n"
+                       f"🎬 {entry['title']}\n"
+                       f"👤 {entry['uploader']}\n"
+                       f"⏱ {format_duration(entry['duration'])}\n"
+                       f"🔗 {entry['webpage_url']}")
+            try:
+                await max_api.send_media(chat_id, caption, file_path, media_type)
+            except Exception as e:
+                logger.error(f"Ошибка отправки {file_path}: {e}")
+                # Пробуем как документ
+                try:
+                    upload_url = await max_api.get_upload_url('file')
+                    token = await max_api.upload_file(upload_url, file_path)
+                    attachment = {"type": "file", "payload": {"token": token}}
+                    await max_api.send_message(chat_id, f"{caption}\n\n(отправлено как файл)", [attachment])
+                except:
+                    pass
+            finally:
+                Path(file_path).unlink(missing_ok=True)
+
+        # Отправляем общее описание поста (если есть)
+        if info.get('description'):
+            await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
+
+    # Удаляем статусное сообщение
+    await status_msg.message.delete()
+
+    # Сообщение о поддержке (донат)
+    await event.message.answer(
+        "❤️ Если вам понравился бот, поддержите проект:\n"
+        "💸 [Ссылка на донат](https://donate.example.com)\n"
+        "Спасибо!"
+    )
 
 # ----------------------------- ЗАПУСК БОТА -----------------------------
-async def main():
-    init_db()
-    logger.info("Бот запущен и слушает...")
-    await dp.start_polling(bot)
+# Здесь должен быть код инициализации вашего бота (вебхуки или long polling)
+# Например, используя aiohttp для приёма вебхуков или библиотеку для MAX.
+# Поскольку у нас нет готовой библиотеки, я покажу пример с aiohttp сервером,
+# который будет принимать вебхуки от MAX.
+
+from aiohttp import web
+import json
+
+async def webhook(request):
+    try:
+        data = await request.json()
+        logger.info(f"Получено обновление: {data}")
+
+        # Предполагаем, что событие message_created
+        if data.get('type') == 'message_created':
+            event = data['payload']
+            # Здесь event.message — объект сообщения
+            # Нужно адаптировать под реальную структуру от MAX
+            # Временно используем Mock-объект
+            class MockEvent:
+                def __init__(self, msg):
+                    self.message = msg
+            mock_event = MockEvent(event['message'])
+            text = event['message']['body']['text']
+            if text and ('http://' in text or 'https://' in text):
+                # Извлекаем первую ссылку
+                urls = re.findall(r'https?://\S+', text)
+                if urls:
+                    await handle_url(mock_event, urls[0])
+            else:
+                # Ответ на команды /start и т.д.
+                if text == '/start':
+                    # Отправить приветствие через API напрямую
+                    max_api = MaxAPI(TOKEN)
+                    await max_api.send_message(
+                        event['message']['recipient']['chat_id'],
+                        "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
+                        "Просто отправь мне ссылку на пост или видео."
+                    )
+                else:
+                    max_api = MaxAPI(TOKEN)
+                    await max_api.send_message(
+                        event['message']['recipient']['chat_id'],
+                        "Отправь мне ссылку на видео или пост."
+                    )
+        return web.Response(text="OK")
+    except Exception as e:
+        logger.error(f"Ошибка в webhook: {e}", exc_info=True)
+        return web.Response(status=500)
+
+app = web.Application()
+app.router.add_post('/webhook', webhook)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    web.run_app(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
