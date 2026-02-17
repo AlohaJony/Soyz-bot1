@@ -27,7 +27,7 @@ async def upload_to_filestack(file_path: str) -> str | None:
     Загружает файл на Filestack и возвращает прямую ссылку.
     Требует наличия переменной окружения FILESTACK_API_KEY.
     """
-    api_key = os.getenv('AZndAZJ6dRdSWdUGvXg0Bz')
+    api_key = 'AZndAZJ6dRdSWdUGvXg0Bz'
     if not api_key:
         logger.error("❌ Не задан FILESTACK_API_KEY в переменных окружения")
         return None
@@ -41,20 +41,10 @@ async def upload_to_filestack(file_path: str) -> str | None:
             None,
             lambda: filestack.Client(api_key).upload(filepath=file_path)
         )
-        # filelink.url — это прямая ссылка на файл (например, https://cdn.filestackcontent.com/ABC123)
         logger.info(f"✅ Файл загружен на Filestack: {filelink.url}")
         return filelink.url
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки на Filestack: {e}", exc_info=True)
-        return None
-
-                    # Извлекаем ссылку на скачивание [citation:6]
-                    download_page = result['data']['downloadPage']
-                    logger.info(f"✅ Файл загружен на gofile.io: {download_page}")
-                    return download_page
-
-    except Exception as e:
-        logger.error(f"Исключение при загрузке на gofile.io: {e}", exc_info=True)
         return None
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
