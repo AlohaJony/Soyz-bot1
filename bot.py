@@ -236,7 +236,8 @@ async def handle_url(event, url: str):
         await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Начинаю загрузку...")
         tasks = []
         for idx, entry in enumerate(info['entries']):
-            file_id = f"{re.sub(r'\W+', '', entry['title'][:20])}_{idx}"
+            safe_title = re.sub(r'\W+', '', entry['title'][:20])
+            file_id = f"{safe_title}_{idx}"
             ext = entry.get('ext', 'mp4')
             tasks.append(download_file(entry['webpage_url'], file_id, ext))
 
