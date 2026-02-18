@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 import aiohttp
 import yt_dlp
 import yadisk
@@ -50,11 +51,6 @@ def format_duration(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 def extract_info(url: str) -> dict | None:
-    """
-    Извлекает информацию о контенте.
-    Для Instagram, если пост содержит несколько файлов, берётся только первый.
-    Для остальных платформ плейлисты обрабатываются полностью.
-    """
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -66,7 +62,6 @@ def extract_info(url: str) -> dict | None:
             info = ydl.extract_info(url, download=False)
             extractor = info.get('extractor', '').lower()
 
-            # Если это Instagram и есть несколько записей – берём только первую
             if 'instagram' in extractor and 'entries' in info and info['entries']:
                 entry = info['entries'][0]
                 return {
@@ -80,7 +75,6 @@ def extract_info(url: str) -> dict | None:
                     'thumbnail': entry.get('thumbnail'),
                 }
 
-            # Обычный плейлист (YouTube плейлист, карусель другой соцсети)
             if 'entries' in info:
                 entries = []
                 for entry in info['entries']:
@@ -103,7 +97,6 @@ def extract_info(url: str) -> dict | None:
                     'description': info.get('description', '')
                 }
 
-            # Одиночное видео/изображение
             return {
                 'type': 'single',
                 'title': info.get('title', 'Без названия'),
@@ -179,7 +172,6 @@ class MaxAPI:
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
 
-                    # Проверяем, что ответ — JSON
                     if 'application/json' in resp.content_type:
                         result = await resp.json()
                         token = video_token or result['token']
@@ -205,26 +197,20 @@ async def upload_to_yadisk(file_path: str) -> str | None:
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
     client = yadisk.AsyncClient(token=YADISK_TOKEN)
     try:
-        # Создаём папку, если её нет (игнорируем ошибку, если уже существует)
         try:
             await client.mkdir("/bot_uploads")
         except yadisk.exceptions.ConflictError:
-            pass  # папка уже есть
+            pass
 
         disk_path = f"/bot_uploads/{os.path.basename(file_path)}"
         await client.upload(file_path, disk_path, overwrite=True)
 
         # Публикуем файл и получаем публичную ссылку
-        publish_result = await client.publish(disk_path)
-        # В ответе publish может быть public_key
-        if isinstance(publish_result, dict) and 'public_key' in publish_result:
-            public_url = f"https://disk.yandex.ru/d/{publish_result['public_key']}"
-        else:
-            # Если нет, получаем метаданные
-            meta = await client.get_meta(disk_path)
-            public_url = meta.get('public_url')
-            if not public_url:
-                raise Exception("Не удалось получить публичную ссылку")
+        await client.publish(disk_path)
+        meta = await client.get_meta(disk_path)
+        public_url = meta.public_url
+        if not public_url:
+            raise Exception("Не удалось получить публичную ссылку")
 
         logger.info(f"✅ Файл загружен на Яндекс.Диск: {public_url}")
         return public_url
@@ -233,6 +219,7 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         return None
     finally:
         await client.close()
+
 # ----------------------------- ОСНОВНАЯ ЛОГИКА -----------------------------
 async def handle_url(event, url: str):
     chat_id = event.message.recipient.chat_id
@@ -338,7 +325,6 @@ async def handle_url(event, url: str):
         if info.get('description'):
             await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
 
-    # Удаляем статусное сообщение
     try:
         await status_msg.message.delete()
     except:
