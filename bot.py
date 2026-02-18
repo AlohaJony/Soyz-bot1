@@ -163,17 +163,10 @@ class MaxAPI:
         return await self._request('POST', endpoint)
 
     async def send_media(self, recipient_id: int, caption: str, file_path: str, media_type: str):
-        """
-        Загружает файл и отправляет его как медиа.
-        recipient_id — ID получателя (пользователя или чата).
-        """
-        # Шаг 1: получаем URL для загрузки и (для video/audio) токен
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
         video_token = upload_info.get('token') if media_type in ('video', 'audio') else None
-        logger.debug(f"Получен URL: {upload_url}, токен: {video_token}")
 
-        # Шаг 2: загружаем файл
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -196,31 +189,20 @@ class MaxAPI:
                         result = await resp.json()
                         token = result['token']
 
-        # Шаг 3: пауза для обработки файла
-        logger.debug("Пауза 2 секунды для обработки файла на сервере...")
         await asyncio.sleep(2)
 
-        # Шаг 4: отправляем сообщение с вложением
         attachment = {"type": media_type, "payload": {"token": token}}
         logger.debug(f"Отправка сообщения с вложением: {attachment}")
         return await self.send_message(recipient_id, caption, [attachment])
 
     async def send_message(self, recipient_id: int, text: str, attachments: list = None):
-        """
-        Отправляет сообщение получателю.
-        ПРИМЕЧАНИЕ: возможные имена поля для идентификатора получателя:
-        - "chatId"   (если это идентификатор чата)
-        - "userId"   (если это идентификатор пользователя)
-        - "recipientId"
-        Ниже используется "userId", так как recipient_id = event.message.sender.user_id.
-        Если сервер возвращает "Unknown recipient", попробуйте заменить "userId" на "chatId".
-        """
+        """Отправляет сообщение, используя chatId."""
         payload = {
-            "userId": recipient_id,          # ← попробуйте заменить на "chatId" или "recipientId"
+            "chatId": recipient_id,  # ← теперь используем chatId
             "text": text,
             "attachments": attachments or []
         }
-        logger.info(f"Отправка сообщения получателю {recipient_id}: {payload}")
+        logger.info(f"Отправка сообщения в чат {recipient_id}: {payload}")
         return await self._request('POST', 'messages', json=payload)
     
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
@@ -268,7 +250,7 @@ async def handle_url(event, url: str):
         ext = Path(file_path).suffix.lstrip('.')
         media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
         # Используем user_id отправителя как получателя
-        recipient_id = event.message.sender.user_id
+        recipient_id = event.message.recipient.chat_id
 
         if file_index and total_files:
             caption = (f"📦 Файл {file_index}/{total_files}\n"
