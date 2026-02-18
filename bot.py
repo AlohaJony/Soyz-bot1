@@ -109,14 +109,10 @@ class MaxAPI:
                 return await resp.json()
 
     async def get_upload_info(self, media_type: str) -> dict:
-    """
-    Запрашивает информацию для загрузки файла.
-    Возвращает словарь с ключами 'url' и, для video/audio, 'token'.
-    """
+        """Запрашивает информацию для загрузки файла. Возвращает словарь с ключами 'url' и, для video/audio, 'token'."""
         endpoint = f"uploads?type={media_type}"
-    # Отправляем POST-запрос без тела
         data = await self._request('POST', endpoint)
-        return data  # data содержит url и, возможно, token
+        return data
 
     async def send_message(self, chat_id: int, text: str, attachments: list = None):
         payload = {"chat_id": chat_id, "text": text, "attachments": attachments or []}
