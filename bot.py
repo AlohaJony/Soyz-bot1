@@ -4,6 +4,7 @@ import os
 import re
 import aiohttp
 import yt_dlp
+import filestack
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -15,6 +16,9 @@ from maxapi.types import MessageCreated, BotStarted
 TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
     raise ValueError("❌ Не задан BOT_TOKEN в переменных окружения")
+
+# ВАЖНО: замените на ваш реальный ключ Filestack
+FILESTACK_API_KEY = "AZndAZJ6dRdSWdUGvXg0Bz"
 
 DOWNLOAD_DIR = 'downloads'
 Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
@@ -114,7 +118,7 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
 class MaxAPI:
     def __init__(self, token: str):
         self.token = token
-        self.base_url = "https://platform-api.max.ru"  # БЕЗ /v1!
+        self.base_url = "https://platform-api.max.ru"
         self.headers = {"Authorization": token}
 
     async def _request(self, method: str, path: str, **kwargs):
@@ -175,9 +179,28 @@ class MaxAPI:
         }
         return await self._request('POST', 'messages', json=payload)
 
+# ----------------------------- FALLBACK НА FILESTACK -----------------------------
+async def upload_to_filestack(file_path: str) -> str | None:
+    """
+    Загружает файл на Filestack и возвращает прямую ссылку.
+    """
+    logger.info(f"📤 Filestack: начало загрузки {file_path}")
+    try:
+        # Запускаем синхронную загрузку в отдельном потоке
+        loop = asyncio.get_running_loop()
+        filelink = await loop.run_in_executor(
+            None,
+            lambda: filestack.Client(FILESTACK_API_KEY).upload(filepath=file_path)
+        )
+        logger.info(f"✅ Файл загружен на Filestack: {filelink.url}")
+        return filelink.url
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки на Filestack: {e}", exc_info=True)
+        return None
+
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
-    """Обрабатывает ссылку: скачивает контент и отправляет через MAX."""
+    """Обрабатывает ссылку: скачивает контент и отправляет через MAX, при ошибке через Filestack."""
     chat_id = event.message.recipient.chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
@@ -206,9 +229,9 @@ async def handle_url(event, url: str):
                    f"🔗 {info['webpage_url']}")
 
         try:
+            # Пытаемся отправить через MAX
             await max_api.send_media(chat_id, caption, file_path, media_type)
             logger.info("✅ Медиа отправлено через MAX")
-            # Сообщение о поддержке при успехе
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
@@ -216,7 +239,16 @@ async def handle_url(event, url: str):
             )
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
-            await event.message.answer("❌ Сервис временно недоступен. Попробуйте позже.")
+            # Fallback на Filestack
+            filestack_url = await upload_to_filestack(file_path)
+            if filestack_url:
+                await event.message.answer(
+                    f"⚠️ *Сервер MAX временно недоступен*, но видео загружено на резервный сервер Filestack:\n"
+                    f"🔗 [Скачать видео]({filestack_url})\n"
+                    f"Ссылка постоянная."
+                )
+            else:
+                await event.message.answer("❌ Не удалось отправить видео. Сервис временно недоступен.")
         finally:
             Path(file_path).unlink(missing_ok=True)
 
@@ -258,12 +290,19 @@ async def handle_url(event, url: str):
                 success_count += 1
             except Exception as e:
                 logger.error(f"Ошибка отправки {file_path}: {e}")
-                await event.message.answer(f"❌ Не удалось отправить файл {idx+1}. Сервис временно недоступен.")
+                # Fallback на Filestack для этого файла
+                filestack_url = await upload_to_filestack(file_path)
+                if filestack_url:
+                    await event.message.answer(
+                        f"⚠️ Файл {idx+1} временно недоступен в MAX, но доступен по ссылке:\n"
+                        f"🔗 [Скачать]({filestack_url})"
+                    )
+                else:
+                    await event.message.answer(f"❌ Не удалось отправить файл {idx+1}.")
             finally:
                 Path(file_path).unlink(missing_ok=True)
 
         if success_count > 0:
-            # Сообщение о поддержке, если хоть один файл отправлен
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
