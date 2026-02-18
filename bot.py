@@ -4,7 +4,7 @@ import os
 import re
 import aiohttp
 import yt_dlp
-import filestack
+import yadisk
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,8 +17,9 @@ TOKEN = os.getenv('BOT_TOKEN')
 if not TOKEN:
     raise ValueError("❌ Не задан BOT_TOKEN в переменных окружения")
 
-# ВАЖНО: замените на ваш реальный ключ Filestack
-FILESTACK_API_KEY = "AZndAZJ6dRdSWdUGvXg0Bz"
+YADISK_TOKEN = os.getenv('YADISK_TOKEN')
+if not YADISK_TOKEN:
+    raise ValueError("❌ Не задан YADISK_TOKEN в переменных окружения")
 
 DOWNLOAD_DIR = 'downloads'
 Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
@@ -70,7 +71,8 @@ def extract_info(url: str) -> dict | None:
                     'type': 'playlist',
                     'title': info.get('title', 'Пост'),
                     'entries': entries,
-                    'webpage_url': url
+                    'webpage_url': url,
+                    'description': info.get('description', '')  # описание всего поста
                 }
             else:  # одиночное видео/изображение
                 return {
@@ -119,7 +121,7 @@ class MaxAPI:
     def __init__(self, token: str):
         self.token = token
         self.base_url = "https://platform-api.max.ru"
-        self.headers = {"Authorization": token}
+        self.headers = {"Authorization": token}  # Без "Bearer"
 
     async def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -179,28 +181,39 @@ class MaxAPI:
         }
         return await self._request('POST', 'messages', json=payload)
 
-# ----------------------------- FALLBACK НА FILESTACK -----------------------------
-async def upload_to_filestack(file_path: str) -> str | None:
+# ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
+async def upload_to_yadisk(file_path: str) -> str | None:
     """
-    Загружает файл на Filestack и возвращает прямую ссылку.
+    Загружает файл на Яндекс.Диск и возвращает прямую ссылку на скачивание.
     """
-    logger.info(f"📤 Filestack: начало загрузки {file_path}")
+    logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
+
+    # Создаём асинхронного клиента
+    client = yadisk.AsyncClient(token=YADISK_TOKEN)
+
     try:
-        # Запускаем синхронную загрузку в отдельном потоке
-        loop = asyncio.get_running_loop()
-        filelink = await loop.run_in_executor(
-            None,
-            lambda: filestack.Client(FILESTACK_API_KEY).upload(filepath=file_path)
-        )
-        logger.info(f"✅ Файл загружен на Filestack: {filelink.url}")
-        return filelink.url
+        # Загружаем файл в корень диска
+        # Важно: путь на диске должен быть уникальным, чтобы не перезаписать существующий файл
+        disk_path = f"/bot_uploads/{os.path.basename(file_path)}"
+        await client.upload(file_path, disk_path, overwrite=True)
+
+        # Делаем файл публичным и получаем ссылку
+        await client.publish(disk_path)
+        public_url = await client.get_public_link(disk_path)
+
+        logger.info(f"✅ Файл загружен на Яндекс.Диск: {public_url}")
+        return public_url
+
     except Exception as e:
-        logger.error(f"❌ Ошибка загрузки на Filestack: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка загрузки на Яндекс.Диск: {e}", exc_info=True)
         return None
+    finally:
+        # Важно: закрываем сессию
+        await client.close()
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
-    """Обрабатывает ссылку: скачивает контент и отправляет через MAX, при ошибке через Filestack."""
+    """Обрабатывает ссылку: скачивает контент и отправляет через MAX, при ошибке через Яндекс.Диск."""
     chat_id = event.message.recipient.chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
@@ -213,6 +226,43 @@ async def handle_url(event, url: str):
 
     max_api = MaxAPI(TOKEN)
 
+    # Функция для отправки одного файла (используется и для single, и для playlist)
+    async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
+        ext = Path(file_path).suffix.lstrip('.')
+        media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
+
+        if file_index is not None and total_files is not None:
+            caption = (f"📦 Файл {file_index}/{total_files}\n"
+                       f"🎬 {entry_info['title']}\n"
+                       f"👤 {entry_info['uploader']}\n"
+                       f"⏱ {format_duration(entry_info['duration'])}\n"
+                       f"🔗 {entry_info['webpage_url']}")
+        else:
+            caption = (f"🎬 {entry_info['title']}\n"
+                       f"👤 {entry_info['uploader']}\n"
+                       f"⏱ {format_duration(entry_info['duration'])}\n"
+                       f"🔗 {entry_info['webpage_url']}")
+
+        try:
+            # Пытаемся отправить через MAX
+            await max_api.send_media(chat_id, caption, file_path, media_type)
+            logger.info(f"✅ Медиа отправлено через MAX")
+            return True, None  # Успех, ссылка не нужна
+        except Exception as e:
+            logger.error(f"Ошибка отправки через MAX: {e}")
+            # Fallback на Яндекс.Диск
+            yadisk_url = await upload_to_yadisk(file_path)
+            if yadisk_url:
+                await event.message.answer(
+                    f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
+                    f"🔗 [Скачать]({yadisk_url})"
+                )
+                logger.info(f"✅ Сообщение со ссылкой Яндекс.Диск для файла {file_index if file_index else ''} отправлено")
+                return True, yadisk_url  # Успех через fallback
+            else:
+                await event.message.answer(f"❌ Не удалось отправить файл{' ' + str(file_index) if file_index else ''}.")
+                return False, None
+
     if info['type'] == 'single':
         # Одиночный файл
         ext = info.get('ext', 'mp4')
@@ -222,40 +272,21 @@ async def handle_url(event, url: str):
             await status_msg.message.edit("❌ Не удалось скачать файл.")
             return
 
-        media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
-        caption = (f"🎬 {info['title']}\n"
-                   f"👤 {info['uploader']}\n"
-                   f"⏱ {format_duration(info['duration'])}\n"
-                   f"🔗 {info['webpage_url']}")
+        success, _ = await send_single_file(file_path, info)
+        Path(file_path).unlink(missing_ok=True)
 
-        try:
-            # Пытаемся отправить через MAX
-            await max_api.send_media(chat_id, caption, file_path, media_type)
-            logger.info("✅ Медиа отправлено через MAX")
+        # Отправляем описание, если есть
+        if success and info.get('description'):
+            desc = info['description'][:4000]
+            await event.message.answer(f"📝 Описание:\n\n{desc}")
+
+        if success:
+            # Сообщение о поддержке
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
                 "Спасибо!"
             )
-        except Exception as e:
-            logger.error(f"Ошибка отправки через MAX: {e}")
-            # Fallback на Filestack
-            filestack_url = await upload_to_filestack(file_path)
-            if filestack_url:
-                await event.message.answer(
-                    f"⚠️ *Сервер MAX временно недоступен*, но видео загружено на резервный сервер Filestack:\n"
-                    f"🔗 [Скачать видео]({filestack_url})\n"
-                    f"Ссылка постоянная."
-                )
-            else:
-                await event.message.answer("❌ Не удалось отправить видео. Сервис временно недоступен.")
-        finally:
-            Path(file_path).unlink(missing_ok=True)
-
-        # Отправляем описание, если есть
-        if info.get('description'):
-            desc = info['description'][:4000]
-            await event.message.answer(f"📝 Описание:\n\n{desc}")
 
     else:  # playlist
         await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Загружаю...")
@@ -275,34 +306,16 @@ async def handle_url(event, url: str):
 
         await status_msg.message.edit(f"✅ Скачано {len(successful_paths)} файлов. Отправляю...")
 
-        success_count = 0
+        any_success = False
         for idx, file_path in enumerate(successful_paths):
-            ext = Path(file_path).suffix.lstrip('.')
-            media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
             entry = info['entries'][idx]
-            caption = (f"📦 Файл {idx+1}/{len(successful_paths)}\n"
-                       f"🎬 {entry['title']}\n"
-                       f"👤 {entry['uploader']}\n"
-                       f"⏱ {format_duration(entry['duration'])}\n"
-                       f"🔗 {entry['webpage_url']}")
-            try:
-                await max_api.send_media(chat_id, caption, file_path, media_type)
-                success_count += 1
-            except Exception as e:
-                logger.error(f"Ошибка отправки {file_path}: {e}")
-                # Fallback на Filestack для этого файла
-                filestack_url = await upload_to_filestack(file_path)
-                if filestack_url:
-                    await event.message.answer(
-                        f"⚠️ Файл {idx+1} временно недоступен в MAX, но доступен по ссылке:\n"
-                        f"🔗 [Скачать]({filestack_url})"
-                    )
-                else:
-                    await event.message.answer(f"❌ Не удалось отправить файл {idx+1}.")
-            finally:
-                Path(file_path).unlink(missing_ok=True)
+            success, _ = await send_single_file(file_path, entry, idx+1, len(successful_paths))
+            if success:
+                any_success = True
+            Path(file_path).unlink(missing_ok=True)
 
-        if success_count > 0:
+        if any_success:
+            # Сообщение о поддержке
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
@@ -311,6 +324,7 @@ async def handle_url(event, url: str):
         else:
             await event.message.answer("❌ Не удалось отправить ни одного файла. Сервис временно недоступен.")
 
+        # Отправляем описание поста, если есть
         if info.get('description'):
             await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
 
