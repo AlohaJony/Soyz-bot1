@@ -158,14 +158,20 @@ class MaxAPI:
                     return None
                 return await resp.json()
 
-    async def get_upload_url(self, media_type: str) -> str:
-        """Шаг 1: получает URL для загрузки файла"""
+    async def get_upload_info(self, media_type: str) -> dict:
+        """
+        Шаг 1: получает URL для загрузки и токен (для video/audio).
+        Возвращает словарь с ключами 'url' и (для video/audio) 'token'.
+        """
         endpoint = f"uploads?type={media_type}"
         data = await self._request('POST', endpoint)
-        return data['url']
+        return data  # data содержит url и, для video/audio, token
 
-    async def upload_file(self, upload_url: str, file_path: str) -> str:
-        """Шаг 2: загружает файл и возвращает токен"""
+    async def upload_file(self, upload_url: str, file_path: str) -> None:
+        """
+        Шаг 2: загружает файл на полученный URL.
+        Проверяет только статус ответа (тело игнорируется).
+        """
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -175,47 +181,35 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    
-                    # Проверяем, что ответ — JSON
-                    if 'application/json' not in resp.content_type:
-                        text = await resp.text()
-                        logger.error(f"Unexpected content-type: {resp.content_type}, body: {text}")
-                        raise Exception("Upload response is not JSON")
-                    
-                    result = await resp.json()
-                    # Для видео/аудио токен в result['token']
-                    if 'token' not in result:
-                        logger.error(f"No token in response: {result}")
-                        raise Exception("No token in upload response")
-                    return result['token']
+                    # Для видео/аудио ответ может быть не JSON (например, <retval>1</retval>)
+                    # Просто проверяем статус, токен уже получен на шаге 1
+                    logger.debug(f"Upload successful, status {resp.status}")
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
         """Полный процесс: загрузка и отправка медиа"""
-        # Шаг 1: получаем URL для загрузки
-        upload_url = await self.get_upload_url(media_type)
-        
-        # Шаг 2: загружаем файл и получаем токен
-        token = await self.upload_file(upload_url, file_path)
-        
+        # Шаг 1: получаем URL и токен
+        upload_info = await self.get_upload_info(media_type)
+        upload_url = upload_info['url']
+        token = upload_info.get('token')  # для video/audio токен приходит здесь
+
+        # Шаг 2: загружаем файл (токен уже есть)
+        await self.upload_file(upload_url, file_path)
+
         # Шаг 3: пауза для обработки (рекомендация документации)
         logger.debug("Пауза 2 секунды для обработки файла на сервере...")
         await asyncio.sleep(2)
-        
+
         # Шаг 4: отправляем сообщение с вложением
         attachment = {"type": media_type, "payload": {"token": token}}
+        # Важно: вложение должно быть именно таким, как в документации
         return await self.send_message(chat_id, caption, [attachment])
 
     async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        """Отправляет сообщение в чат"""
+        """Отправляет сообщение в чат (получатель определяется контекстом)"""
         payload = {
             "text": text,
             "attachments": attachments or []
         }
-        # Получатель указывается в пути? Нет, документация говорит, что chat_id в теле?
-        # Согласно предоставленным примерам, chat_id не нужен в теле для сообщений с вложениями.
-        # Но для надёжности добавим chat_id как строку (GREEN-API так делает).
-        # Однако в официальном примере MAX (шаг 3) нет chat_id, только text и attachments.
-        # Поэтому пока отправляем без chat_id, так как это ответ на сообщение.
         logger.info(f"Отправка сообщения: {payload}")
         return await self._request('POST', 'messages', json=payload)
     
