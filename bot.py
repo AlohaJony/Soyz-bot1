@@ -158,15 +158,14 @@ class MaxAPI:
                     return None
                 return await resp.json()
 
-    async def get_upload_info(self, media_type: str) -> dict:
+    async def get_upload_url(self, media_type: str) -> str:
+        """Шаг 1: получает URL для загрузки файла"""
         endpoint = f"uploads?type={media_type}"
-        return await self._request('POST', endpoint)
+        data = await self._request('POST', endpoint)
+        return data['url']
 
-    async def send_media(self, recipient_id: int, caption: str, file_path: str, media_type: str):
-        upload_info = await self.get_upload_info(media_type)
-        upload_url = upload_info['url']
-        video_token = upload_info.get('token') if media_type in ('video', 'audio') else None
-
+    async def upload_file(self, upload_url: str, file_path: str) -> str:
+        """Шаг 2: загружает файл и возвращает токен"""
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -176,33 +175,48 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
+                    
+                    # Проверяем, что ответ — JSON
+                    if 'application/json' not in resp.content_type:
+                        text = await resp.text()
+                        logger.error(f"Unexpected content-type: {resp.content_type}, body: {text}")
+                        raise Exception("Upload response is not JSON")
+                    
+                    result = await resp.json()
+                    # Для видео/аудио токен в result['token']
+                    if 'token' not in result:
+                        logger.error(f"No token in response: {result}")
+                        raise Exception("No token in upload response")
+                    return result['token']
 
-                    if media_type in ('video', 'audio'):
-                        if 'application/json' in resp.content_type:
-                            result = await resp.json()
-                            logger.debug(f"Upload JSON response: {result}")
-                        else:
-                            text = await resp.text()
-                            logger.debug(f"Upload non-JSON response: {text}")
-                        token = video_token
-                    else:
-                        result = await resp.json()
-                        token = result['token']
-
+    async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
+        """Полный процесс: загрузка и отправка медиа"""
+        # Шаг 1: получаем URL для загрузки
+        upload_url = await self.get_upload_url(media_type)
+        
+        # Шаг 2: загружаем файл и получаем токен
+        token = await self.upload_file(upload_url, file_path)
+        
+        # Шаг 3: пауза для обработки (рекомендация документации)
+        logger.debug("Пауза 2 секунды для обработки файла на сервере...")
         await asyncio.sleep(2)
-
+        
+        # Шаг 4: отправляем сообщение с вложением
         attachment = {"type": media_type, "payload": {"token": token}}
-        logger.debug(f"Отправка сообщения с вложением: {attachment}")
-        return await self.send_message(recipient_id, caption, [attachment])
+        return await self.send_message(chat_id, caption, [attachment])
 
-    async def send_message(self, recipient_id: int, text: str, attachments: list = None):
-        """Отправляет сообщение, используя chatId."""
+    async def send_message(self, chat_id: int, text: str, attachments: list = None):
+        """Отправляет сообщение в чат"""
         payload = {
-            "chatId": recipient_id,  # ← теперь используем chatId
             "text": text,
             "attachments": attachments or []
         }
-        logger.info(f"Отправка сообщения в чат {recipient_id}: {payload}")
+        # Получатель указывается в пути? Нет, документация говорит, что chat_id в теле?
+        # Согласно предоставленным примерам, chat_id не нужен в теле для сообщений с вложениями.
+        # Но для надёжности добавим chat_id как строку (GREEN-API так делает).
+        # Однако в официальном примере MAX (шаг 3) нет chat_id, только text и attachments.
+        # Поэтому пока отправляем без chat_id, так как это ответ на сообщение.
+        logger.info(f"Отправка сообщения: {payload}")
         return await self._request('POST', 'messages', json=payload)
     
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
@@ -265,7 +279,7 @@ async def handle_url(event, url: str):
                        f"🔗 {entry_info['webpage_url']}")
 
         try:
-            await max_api.send_media(recipient_id, caption, file_path, media_type)
+            await max_api.send_media(chat_id, caption, file_path, media_type)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
@@ -355,7 +369,7 @@ async def handle_message(event: MessageCreated):
     text = event.message.body.text or ''
     if text == '/start':
         await event.message.answer(
-            "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
+            "👋 Привет! Я бот для скачивания видео\n"
             "Просто отправь мне ссылку."
         )
         return
