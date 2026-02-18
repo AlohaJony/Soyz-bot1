@@ -163,10 +163,19 @@ class MaxAPI:
         return await self._request('POST', endpoint)
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
+        """
+        Загружает файл и отправляет его как медиа.
+        Поддерживает типы: video, audio, image, file.
+        """
+        # Шаг 1: получаем URL для загрузки и (для video/audio) токен
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
-        video_token = upload_info.get('token')
+        
+        # Для видео и аудио токен приходит сразу
+        video_token = upload_info.get('token') if media_type in ('video', 'audio') else None
+        logger.debug(f"Получен URL: {upload_url}, токен: {video_token}")
 
+        # Шаг 2: загружаем файл
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -177,25 +186,29 @@ class MaxAPI:
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
 
-                    if 'application/json' in resp.content_type:
-                        result = await resp.json()
-                        token = video_token or result['token']
+                    # Для видео/аудио: ответ может быть XML/plain, а не JSON
+                    if media_type in ('video', 'audio'):
+                        if 'application/json' in resp.content_type:
+                            result = await resp.json()
+                            logger.debug(f"Upload JSON response: {result}")
+                        else:
+                            text = await resp.text()
+                            logger.debug(f"Upload non-JSON response: {text}")
+                            # Ожидаем что-то типа <retval>1</retval> или просто "1"
+                        token = video_token  # используем токен из шага 1
                     else:
-                        text = await resp.text()
-                        logger.error(f"Unexpected content-type: {resp.content_type}, body: {text[:200]}")
-                        raise Exception(f"Unexpected response from MAX: {resp.content_type}")
+                        # Для image/file: токен в JSON-ответе
+                        result = await resp.json()
+                        token = result['token']
 
+        # Шаг 3: пауза для обработки (рекомендация из документации)
+        logger.debug("Пауза 2 секунды для обработки файла на сервере...")
         await asyncio.sleep(2)
-        attachment = {"type": media_type, "payload": {"token": token}}
-        return await self.send_message(chat_id, caption, [attachment])
 
-    async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "attachments": attachments or []
-        }
-        return await self._request('POST', 'messages', json=payload)
+        # Шаг 4: отправляем сообщение с вложением
+        attachment = {"type": media_type, "payload": {"token": token}}
+        logger.debug(f"Отправка сообщения с вложением: {attachment}")
+        return await self.send_message(chat_id, caption, [attachment])
 
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
@@ -264,7 +277,7 @@ async def handle_url(event, url: str):
             if yadisk_url:
                 await event.message.answer(
                     f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
-                    f"🔗 [Скачать]({yadisk_url})"
+                    f"🔗 [Скачать]({yadisk_url}), спасибо что пользуетесь нашим сервисом @id644016399855_bot"
                 )
                 return True, yadisk_url
             else:
