@@ -165,7 +165,14 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    result = await resp.json()
+                    # Пытаемся получить JSON, но если не получается – пробрасываем исключение
+                    try:
+                        result = await resp.json()
+                    except aiohttp.ContentTypeError:
+                        # Если ответ не JSON, читаем как текст для отладки
+                        text = await resp.text()
+                        logger.error(f"Ответ не JSON: {text[:200]}")
+                        raise Exception(f"Unexpected response: {resp.content_type}")
                     token = video_token or result['token']
 
         await asyncio.sleep(2)
@@ -185,6 +192,15 @@ async def upload_to_yadisk(file_path: str) -> str | None:
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
     client = yadisk.AsyncClient(token=YADISK_TOKEN)
     try:
+        # Создаём папку /bot_uploads, если её нет
+        try:
+            await client.mkdir("/bot_uploads")
+            logger.info("📁 Папка /bot_uploads создана на Яндекс.Диске")
+        except yadisk.exceptions.PathExistsError:
+            pass  # папка уже существует
+        except Exception as e:
+            logger.warning(f"Не удалось создать папку /bot_uploads: {e}")
+
         disk_path = f"/bot_uploads/{os.path.basename(file_path)}"
         await client.upload(file_path, disk_path, overwrite=True)
         await client.publish(disk_path)
