@@ -115,7 +115,7 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
         logger.error(f"Ошибка скачивания: {e}")
         return None
 
-# ----------------------------- РАБОТА С API MAX -----------------------------
+# ----------------------------- РАБОТА С API MAX (ПРЯМЫЕ ВЫЗОВЫ) -----------------------------
 class MaxAPI:
     def __init__(self, token: str):
         self.token = token
@@ -136,7 +136,8 @@ class MaxAPI:
 
     async def get_upload_url(self, media_type: str) -> str:
         """Запрашивает URL для загрузки файла. media_type: 'image' или 'video'"""
-        data = await self._request('POST', f'uploads?type={media_type}')
+        # Новый путь (предположительно)
+        data = await self._request('POST', 'attachments/upload', json={'type': media_type})
         return data['url']
 
     async def upload_file(self, upload_url: str, file_path: str) -> str:
@@ -176,6 +177,54 @@ class MaxAPI:
         # 4. Отправляем сообщение с вложением
         return await self.send_message(chat_id, caption, [attachment])
 
+# ----------------------------- ФУНКЦИЯ ДЛЯ ЗАГРУЗКИ НА GOFILE.IO (FALLBACK) -----------------------------
+async def upload_to_gofile(file_path: str) -> str | None:
+    """
+    Загружает файл на gofile.io и возвращает прямую ссылку на скачивание.
+    """
+    logger.info(f"📤 gofile.io: начало загрузки {file_path}")
+
+    # 1. Получаем доступный сервер для загрузки
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://api.gofile.io/servers') as resp:
+                if resp.status != 200:
+                    logger.error(f"Ошибка получения сервера: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                if data['status'] != 'ok':
+                    logger.error(f"API вернул ошибку: {data}")
+                    return None
+                server = data['data']['servers'][0]['name']
+                logger.info(f"Выбран сервер: {server}")
+    except Exception as e:
+        logger.error(f"Исключение при получении сервера: {e}")
+        return None
+
+    # 2. Загружаем файл на выбранный сервер
+    upload_url = f"https://{server}.gofile.io/uploadFile"
+    try:
+        with open(file_path, 'rb') as f:
+            data = aiohttp.FormData()
+            data.add_field('file', f, filename=os.path.basename(file_path))
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(upload_url, data=data) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Ошибка загрузки: HTTP {resp.status}")
+                        return None
+                    result = await resp.json()
+                    if result['status'] != 'ok':
+                        logger.error(f"API загрузки вернул ошибку: {result}")
+                        return None
+
+                    download_page = result['data']['downloadPage']
+                    logger.info(f"✅ Файл загружен на gofile.io: {download_page}")
+                    return download_page
+    except Exception as e:
+        logger.error(f"Исключение при загрузке на gofile.io: {e}", exc_info=True)
+        return None
+
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
     """Основная логика обработки ссылки (вызывается из обработчика сообщений)."""
@@ -195,7 +244,6 @@ async def handle_url(event, url: str):
     if info['type'] == 'single':
         # Одиночное видео/изображение
         ext = info.get('ext', 'mp4')
-        # Очищаем название от спецсимволов для имени файла
         safe_title = re.sub(r'\W+', '', info['title'][:30])
         file_id = safe_title
         file_path = await download_file(info['webpage_url'], file_id, ext)
@@ -203,29 +251,28 @@ async def handle_url(event, url: str):
             await status_msg.message.edit("❌ Не удалось скачать файл.")
             return
 
-        # Определяем тип медиа
         media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
                    f"⏱ {format_duration(info['duration'])}\n"
                    f"🔗 {info['webpage_url']}")
 
-        # Отправляем через MAX API
         try:
+            # Пытаемся отправить через MAX
             await max_api.send_media(chat_id, caption, file_path, media_type)
-            logger.info("✅ Медиа отправлено")
+            logger.info("✅ Медиа отправлено через MAX")
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
-            # Fallback: пытаемся отправить как файл (документ)
-            try:
-                upload_url = await max_api.get_upload_url('file')
-                token = await max_api.upload_file(upload_url, file_path)
-                attachment = {"type": "file", "payload": {"token": token}}
-                await max_api.send_message(chat_id, caption, [attachment])
-                logger.info("✅ Файл отправлен как документ")
-            except Exception as e2:
-                logger.error(f"Fallback тоже не сработал: {e2}")
-                await status_msg.message.edit("❌ Не удалось отправить файл.")
+            # Fallback на gofile.io
+            gofile_url = await upload_to_gofile(file_path)
+            if gofile_url:
+                await event.message.answer(
+                    f"⚠️ *Сервер MAX временно недоступен*, но видео загружено на резервный сервер:\n"
+                    f"🔗 [Скачать видео]({gofile_url})\n"
+                    f"Ссылка действительна постоянно."
+                )
+            else:
+                await status_msg.message.edit("❌ Не удалось отправить файл ни через MAX, ни через резервный сервер.")
                 Path(file_path).unlink(missing_ok=True)
                 return
 
@@ -255,7 +302,6 @@ async def handle_url(event, url: str):
 
         await status_msg.message.edit(f"✅ Скачано {len(successful_paths)} файлов. Отправляю...")
 
-        # Отправляем каждый файл отдельным сообщением
         for idx, file_path in enumerate(successful_paths):
             ext = Path(file_path).suffix.lstrip('.')
             media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
@@ -269,14 +315,15 @@ async def handle_url(event, url: str):
                 await max_api.send_media(chat_id, caption, file_path, media_type)
             except Exception as e:
                 logger.error(f"Ошибка отправки {file_path}: {e}")
-                # Пробуем как документ
-                try:
-                    upload_url = await max_api.get_upload_url('file')
-                    token = await max_api.upload_file(upload_url, file_path)
-                    attachment = {"type": "file", "payload": {"token": token}}
-                    await max_api.send_message(chat_id, f"{caption}\n\n(отправлено как файл)", [attachment])
-                except:
-                    pass
+                # Fallback на gofile.io для этого файла
+                gofile_url = await upload_to_gofile(file_path)
+                if gofile_url:
+                    await event.message.answer(
+                        f"⚠️ Файл {idx+1} не удалось отправить через MAX, но он доступен по ссылке:\n"
+                        f"🔗 [Скачать]({gofile_url})"
+                    )
+                else:
+                    await event.message.answer(f"❌ Файл {idx+1} не удалось отправить.")
             finally:
                 Path(file_path).unlink(missing_ok=True)
 
@@ -311,7 +358,6 @@ async def handle_message(event: MessageCreated):
         )
         return
 
-    # Поиск ссылки в тексте
     if 'http://' in text or 'https://' in text:
         urls = re.findall(r'https?://\S+', text)
         if urls:
