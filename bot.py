@@ -115,7 +115,7 @@ class MaxAPI:
     def __init__(self, token: str):
         self.token = token
         self.base_url = "https://platform-api.max.ru"  # БЕЗ /v1!
-        self.headers = {"Authorization": f"Bearer {token}"}
+        self.headers = {"Authorization": token}
 
     async def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
