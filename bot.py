@@ -1,4 +1,4 @@
-   import asyncio
+import asyncio
 import logging
 import os
 import re
@@ -7,7 +7,7 @@ import yt_dlp
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Импорты из maxapi для получения обновлений
+# Импорты из официальной библиотеки MAX для получения обновлений
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
@@ -164,20 +164,25 @@ class MaxAPI:
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
         """Загружает файл и отправляет его как медиа."""
+        # 1. Получаем URL для загрузки
         upload_url = await self.get_upload_url(media_type)
+        # 2. Загружаем файл
         token = await self.upload_file(upload_url, file_path)
+        # 3. Формируем вложение
         attachment = {
             "type": media_type,
             "payload": {"token": token}
         }
+        # 4. Отправляем сообщение с вложением
         return await self.send_message(chat_id, caption, [attachment])
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
-    """Основная логика обработки ссылки."""
+    """Основная логика обработки ссылки (вызывается из обработчика сообщений)."""
     chat_id = event.message.recipient.chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
+    # Получаем информацию о контенте
     info = await asyncio.to_thread(extract_info, url)
     if not info:
         await status_msg.message.edit("❌ Не удалось получить информацию о контенте. Проверьте ссылку.")
@@ -188,24 +193,30 @@ async def handle_url(event, url: str):
     max_api = MaxAPI(TOKEN)
 
     if info['type'] == 'single':
+        # Одиночное видео/изображение
         ext = info.get('ext', 'mp4')
-        file_id = re.sub(r'\W+', '', info['title'][:30])
+        # Очищаем название от спецсимволов для имени файла
+        safe_title = re.sub(r'\W+', '', info['title'][:30])
+        file_id = safe_title
         file_path = await download_file(info['webpage_url'], file_id, ext)
         if not file_path:
             await status_msg.message.edit("❌ Не удалось скачать файл.")
             return
 
+        # Определяем тип медиа
         media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
         caption = (f"🎬 {info['title']}\n"
                    f"👤 {info['uploader']}\n"
                    f"⏱ {format_duration(info['duration'])}\n"
                    f"🔗 {info['webpage_url']}")
 
+        # Отправляем через MAX API
         try:
             await max_api.send_media(chat_id, caption, file_path, media_type)
             logger.info("✅ Медиа отправлено")
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
+            # Fallback: пытаемся отправить как файл (документ)
             try:
                 upload_url = await max_api.get_upload_url('file')
                 token = await max_api.upload_file(upload_url, file_path)
@@ -218,13 +229,15 @@ async def handle_url(event, url: str):
                 Path(file_path).unlink(missing_ok=True)
                 return
 
+        # Удаляем временный файл
         Path(file_path).unlink(missing_ok=True)
 
+        # Отправляем описание, если есть
         if info.get('description'):
             desc = info['description'][:4000]
             await event.message.answer(f"📝 Описание:\n\n{desc}")
 
-    else:  # playlist
+    else:  # playlist (пост с несколькими медиа)
         await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Начинаю загрузку...")
         tasks = []
         for idx, entry in enumerate(info['entries']):
@@ -242,6 +255,7 @@ async def handle_url(event, url: str):
 
         await status_msg.message.edit(f"✅ Скачано {len(successful_paths)} файлов. Отправляю...")
 
+        # Отправляем каждый файл отдельным сообщением
         for idx, file_path in enumerate(successful_paths):
             ext = Path(file_path).suffix.lstrip('.')
             media_type = 'video' if ext in ['mp4', 'mov', 'avi', 'mkv'] else 'image'
@@ -255,6 +269,7 @@ async def handle_url(event, url: str):
                 await max_api.send_media(chat_id, caption, file_path, media_type)
             except Exception as e:
                 logger.error(f"Ошибка отправки {file_path}: {e}")
+                # Пробуем как документ
                 try:
                     upload_url = await max_api.get_upload_url('file')
                     token = await max_api.upload_file(upload_url, file_path)
@@ -265,20 +280,25 @@ async def handle_url(event, url: str):
             finally:
                 Path(file_path).unlink(missing_ok=True)
 
+        # Отправляем общее описание поста (если есть)
         if info.get('description'):
             await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
 
+    # Удаляем статусное сообщение
     await status_msg.message.delete()
+
+    # Сообщение о поддержке (донат)
     await event.message.answer(
         "❤️ Если вам понравился бот, поддержите проект:\n"
         "💸 [Ссылка на донат](https://donate.example.com)\n"
         "Спасибо!"
     )
 
-# ----------------------------- ИНИЦИАЛИЗАЦИЯ БОТА MAX И ОБРАБОТЧИКИ -----------------------------
+# ----------------------------- ИНИЦИАЛИЗАЦИЯ БОТА MAX (ДЛЯ ПОЛУЧЕНИЯ ОБНОВЛЕНИЙ) -----------------------------
 max_bot = MaxBot(token=TOKEN)
 dp = Dispatcher()
 
+# ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
     """Обрабатывает входящие сообщения."""
@@ -291,6 +311,7 @@ async def handle_message(event: MessageCreated):
         )
         return
 
+    # Поиск ссылки в тексте
     if 'http://' in text or 'https://' in text:
         urls = re.findall(r'https?://\S+', text)
         if urls:
@@ -308,7 +329,7 @@ async def handle_bot_started(event: BotStarted):
         text="👋 Привет! Я бот для скачивания видео. Просто отправь мне ссылку."
     )
 
-# ----------------------------- ЗАПУСК -----------------------------
+# ----------------------------- ЗАПУСК БОТА -----------------------------
 async def main():
     logger.info("Бот запущен и слушает...")
     await dp.start_polling(max_bot)
