@@ -156,29 +156,25 @@ class MaxAPI:
                     raise Exception(f"MAX API error: {resp.status}")
                 if resp.status == 204:
                     return None
-                # Проверяем Content-Type
-                if 'application/json' in resp.content_type:
+                # Для успешных ответов пытаемся распарсить JSON, но не падаем, если это не JSON
+                try:
                     return await resp.json()
-                else:
+                except:
                     text = await resp.text()
-                    logger.warning(f"Unexpected content-type: {resp.content_type}, body: {text}")
-                    # Для некоторых случаев (например, загрузка видео) это нормально
+                    # Для некоторых случаев (загрузка видео) это нормально
+                    logger.debug(f"Non-JSON response: {text[:200]}")
                     return text
 
     async def get_upload_info(self, media_type: str) -> dict:
-        """Шаг 1: получает URL для загрузки и токен (для video/audio)."""
+        """Шаг 1: получает URL и токен (для видео/аудио)."""
         endpoint = f"uploads?type={media_type}"
         data = await self._request('POST', endpoint)
         if isinstance(data, str):
-            raise Exception(f"Unexpected response from MAX: {data}")
-        return data  # data содержит url и, для video/audio, token
+            raise Exception(f"Expected JSON, got: {data}")
+        return data
 
     async def upload_file(self, upload_url: str, file_path: str, media_type: str):
-        """
-        Шаг 2: загружает файл на полученный URL.
-        Для video/audio просто проверяет статус (токен уже есть).
-        Для image/file ожидает JSON с токеном и возвращает его.
-        """
+        """Шаг 2: загружает файл. Для видео/аудио только проверяет статус."""
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -190,24 +186,19 @@ class MaxAPI:
                         raise Exception(f"Upload failed: {resp.status}")
 
                     if media_type in ('video', 'audio'):
-                        # Для видео/аудио ответ может быть не JSON (например, <retval>1</retval>)
-                        logger.debug(f"Upload successful, status {resp.status}")
-                        return None  # токен уже есть
+                        # Для видео/аудио ответ неважен, токен уже есть
+                        logger.debug("Video uploaded successfully, ignoring response body")
+                        return None
                     else:
                         # Для image/file ожидаем JSON с токеном
-                        if 'application/json' not in resp.content_type:
-                            text = await resp.text()
-                            logger.error(f"Unexpected content-type: {resp.content_type}, body: {text}")
-                            raise Exception("Upload response is not JSON")
                         result = await resp.json()
                         if 'token' not in result:
-                            logger.error(f"No token in response: {result}")
                             raise Exception("No token in upload response")
                         return result['token']
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
-        """Полный процесс: загрузка и отправка медиа"""
-        # Шаг 1: получаем URL и токен (для video/audio токен приходит здесь)
+        """Полный процесс: загрузка и отправка медиа."""
+        # Шаг 1: получаем URL и токен (для видео)
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
         token_from_step1 = upload_info.get('token') if media_type in ('video', 'audio') else None
@@ -219,17 +210,17 @@ class MaxAPI:
         else:
             token = await self.upload_file(upload_url, file_path, media_type)
 
-        # Шаг 3: пауза для обработки (рекомендация документации)
-        logger.debug("Пауза 2 секунды для обработки файла на сервере...")
+        # Шаг 3: пауза
+        logger.debug("Пауза 2 секунды...")
         await asyncio.sleep(2)
 
-        # Шаг 4: отправляем сообщение с вложением
+        # Шаг 4: отправляем сообщение
         attachment = {"type": media_type, "payload": {"token": token}}
-        logger.info(f"Отправка сообщения с вложением: {attachment}")
+        logger.info(f"Отправка вложения: {attachment}")
         return await self.send_message(chat_id, caption, [attachment])
 
     async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        """Отправляет сообщение в чат (получатель определяется контекстом)"""
+        """Отправляет сообщение в ответ на входящее."""
         payload = {
             "text": text,
             "attachments": attachments or []
