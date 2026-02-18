@@ -163,7 +163,7 @@ class MaxAPI:
         return await self._request('POST', endpoint)
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
-        # Шаг 1: получаем URL для загрузки и (для video/audio) токен
+        # Шаг 1: получаем URL и токен
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
         video_token = upload_info.get('token') if media_type in ('video', 'audio') else None
@@ -192,7 +192,7 @@ class MaxAPI:
                         result = await resp.json()
                         token = result['token']
 
-        # Шаг 3: пауза для обработки файла на сервере
+        # Шаг 3: пауза для обработки файла
         logger.debug("Пауза 2 секунды для обработки файла на сервере...")
         await asyncio.sleep(2)
 
@@ -202,14 +202,15 @@ class MaxAPI:
         return await self.send_message(chat_id, caption, [attachment])
 
     async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        """Отправляет текстовое сообщение с опциональными вложениями."""
+        """Отправляет сообщение в чат."""
         payload = {
-            "chat_id": chat_id,
+            "chatId": chat_id,  # исправлено на camelCase
             "text": text,
             "attachments": attachments or []
         }
+        logger.info(f"Отправка сообщения в чат {chat_id}: {payload}")
         return await self._request('POST', 'messages', json=payload)
-
+    
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
