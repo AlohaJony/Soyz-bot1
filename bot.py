@@ -8,7 +8,6 @@ import yadisk
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Импорты из официальной библиотеки MAX для получения обновлений
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
@@ -29,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 # ----------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------------
 def format_duration(seconds: float) -> str:
-    """Форматирует длительность в ЧЧ:ММ:СС или ММ:СС."""
     total = int(seconds)
     h = total // 3600
     m = (total % 3600) // 60
@@ -40,20 +38,37 @@ def format_duration(seconds: float) -> str:
 
 def extract_info(url: str) -> dict | None:
     """
-    Извлекает информацию о контенте через yt-dlp.
-    Возвращает словарь:
-        - type: 'single' или 'playlist'
-        - title, entries, duration, uploader, description, webpage_url, ext, thumbnail
+    Извлекает информацию о контенте.
+    Для Instagram, если пост содержит несколько файлов, берётся только первый.
+    Для остальных платформ плейлисты обрабатываются полностью.
     """
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
     }
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
-            if 'entries' in info:  # плейлист (пост с несколькими медиа)
+            extractor = info.get('extractor', '').lower()
+
+            # Если это Instagram и есть несколько записей – берём только первую
+            if 'instagram' in extractor and 'entries' in info and info['entries']:
+                entry = info['entries'][0]
+                return {
+                    'type': 'single',
+                    'title': entry.get('title', 'Без названия'),
+                    'duration': entry.get('duration', 0),
+                    'uploader': entry.get('uploader', 'Неизвестный автор'),
+                    'description': entry.get('description', ''),
+                    'webpage_url': entry.get('webpage_url', url),
+                    'ext': entry.get('ext', 'mp4'),
+                    'thumbnail': entry.get('thumbnail'),
+                }
+
+            # Обычный плейлист (YouTube плейлист, карусель другой соцсети)
+            if 'entries' in info:
                 entries = []
                 for entry in info['entries']:
                     if entry is None:
@@ -72,28 +87,25 @@ def extract_info(url: str) -> dict | None:
                     'title': info.get('title', 'Пост'),
                     'entries': entries,
                     'webpage_url': url,
-                    'description': info.get('description', '')  # описание всего поста
+                    'description': info.get('description', '')
                 }
-            else:  # одиночное видео/изображение
-                return {
-                    'type': 'single',
-                    'title': info.get('title', 'Без названия'),
-                    'duration': info.get('duration', 0),
-                    'uploader': info.get('uploader', 'Неизвестный автор'),
-                    'description': info.get('description', ''),
-                    'webpage_url': info.get('webpage_url', url),
-                    'ext': info.get('ext', 'mp4'),
-                    'thumbnail': info.get('thumbnail'),
-                }
+
+            # Одиночное видео/изображение
+            return {
+                'type': 'single',
+                'title': info.get('title', 'Без названия'),
+                'duration': info.get('duration', 0),
+                'uploader': info.get('uploader', 'Неизвестный автор'),
+                'description': info.get('description', ''),
+                'webpage_url': info.get('webpage_url', url),
+                'ext': info.get('ext', 'mp4'),
+                'thumbnail': info.get('thumbnail'),
+            }
         except Exception as e:
             logger.error(f"Ошибка получения информации: {e}")
             return None
 
 async def download_file(url: str, file_id: str, ext: str) -> str | None:
-    """
-    Скачивает файл по URL, сохраняет в DOWNLOAD_DIR/{file_id}.{ext}
-    Возвращает путь к файлу или None.
-    """
     filename = f"{file_id}.{ext}"
     file_path = Path(DOWNLOAD_DIR) / filename
     if file_path.exists():
@@ -121,7 +133,7 @@ class MaxAPI:
     def __init__(self, token: str):
         self.token = token
         self.base_url = "https://platform-api.max.ru"
-        self.headers = {"Authorization": token}  # Без "Bearer"
+        self.headers = {"Authorization": token}
 
     async def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -136,24 +148,14 @@ class MaxAPI:
                 return await resp.json()
 
     async def get_upload_info(self, media_type: str) -> dict:
-        """
-        Запрашивает информацию для загрузки файла.
-        Возвращает словарь с ключами 'url' и, для video/audio, 'token'.
-        """
         endpoint = f"uploads?type={media_type}"
         return await self._request('POST', endpoint)
 
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
-        """
-        Загружает файл и отправляет его как медиа.
-        Поддерживает типы: video, audio, image, file.
-        """
-        # 1. Получаем URL и (для видео/аудио) токен
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
-        video_token = upload_info.get('token')  # None для image/file
+        video_token = upload_info.get('token')
 
-        # 2. Загружаем файл
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -166,10 +168,7 @@ class MaxAPI:
                     result = await resp.json()
                     token = video_token or result['token']
 
-        # 3. Пауза для обработки (рекомендация из документации)
         await asyncio.sleep(2)
-
-        # 4. Отправляем сообщение с вложением
         attachment = {"type": media_type, "payload": {"token": token}}
         return await self.send_message(chat_id, caption, [attachment])
 
@@ -183,55 +182,39 @@ class MaxAPI:
 
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
-    """
-    Загружает файл на Яндекс.Диск и возвращает прямую ссылку на скачивание.
-    """
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
-
-    # Создаём асинхронного клиента
     client = yadisk.AsyncClient(token=YADISK_TOKEN)
-
     try:
-        # Загружаем файл в корень диска
-        # Важно: путь на диске должен быть уникальным, чтобы не перезаписать существующий файл
         disk_path = f"/bot_uploads/{os.path.basename(file_path)}"
         await client.upload(file_path, disk_path, overwrite=True)
-
-        # Делаем файл публичным и получаем ссылку
         await client.publish(disk_path)
         public_url = await client.get_public_link(disk_path)
-
         logger.info(f"✅ Файл загружен на Яндекс.Диск: {public_url}")
         return public_url
-
     except Exception as e:
         logger.error(f"❌ Ошибка загрузки на Яндекс.Диск: {e}", exc_info=True)
         return None
     finally:
-        # Важно: закрываем сессию
         await client.close()
 
-# ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
+# ----------------------------- ОСНОВНАЯ ЛОГИКА -----------------------------
 async def handle_url(event, url: str):
-    """Обрабатывает ссылку: скачивает контент и отправляет через MAX, при ошибке через Яндекс.Диск."""
     chat_id = event.message.recipient.chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
     info = await asyncio.to_thread(extract_info, url)
     if not info:
-        await status_msg.message.edit("❌ Не удалось получить информацию о контенте. Проверьте ссылку.")
+        await status_msg.message.edit("❌ Не удалось получить информацию о контенте.")
         return
 
     await status_msg.message.edit("📥 Начинаю загрузку...")
-
     max_api = MaxAPI(TOKEN)
 
-    # Функция для отправки одного файла (используется и для single, и для playlist)
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
         ext = Path(file_path).suffix.lstrip('.')
         media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
 
-        if file_index is not None and total_files is not None:
+        if file_index and total_files:
             caption = (f"📦 Файл {file_index}/{total_files}\n"
                        f"🎬 {entry_info['title']}\n"
                        f"👤 {entry_info['uploader']}\n"
@@ -244,27 +227,23 @@ async def handle_url(event, url: str):
                        f"🔗 {entry_info['webpage_url']}")
 
         try:
-            # Пытаемся отправить через MAX
             await max_api.send_media(chat_id, caption, file_path, media_type)
-            logger.info(f"✅ Медиа отправлено через MAX")
-            return True, None  # Успех, ссылка не нужна
+            logger.info("✅ Медиа отправлено через MAX")
+            return True, None
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
-            # Fallback на Яндекс.Диск
             yadisk_url = await upload_to_yadisk(file_path)
             if yadisk_url:
                 await event.message.answer(
                     f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
                     f"🔗 [Скачать]({yadisk_url})"
                 )
-                logger.info(f"✅ Сообщение со ссылкой Яндекс.Диск для файла {file_index if file_index else ''} отправлено")
-                return True, yadisk_url  # Успех через fallback
+                return True, yadisk_url
             else:
                 await event.message.answer(f"❌ Не удалось отправить файл{' ' + str(file_index) if file_index else ''}.")
                 return False, None
 
     if info['type'] == 'single':
-        # Одиночный файл
         ext = info.get('ext', 'mp4')
         safe_title = re.sub(r'\W+', '', info['title'][:30])
         file_path = await download_file(info['webpage_url'], safe_title, ext)
@@ -275,13 +254,10 @@ async def handle_url(event, url: str):
         success, _ = await send_single_file(file_path, info)
         Path(file_path).unlink(missing_ok=True)
 
-        # Отправляем описание, если есть
         if success and info.get('description'):
-            desc = info['description'][:4000]
-            await event.message.answer(f"📝 Описание:\n\n{desc}")
+            await event.message.answer(f"📝 Описание:\n\n{info['description'][:4000]}")
 
         if success:
-            # Сообщение о поддержке
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
@@ -315,16 +291,14 @@ async def handle_url(event, url: str):
             Path(file_path).unlink(missing_ok=True)
 
         if any_success:
-            # Сообщение о поддержке
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
                 "💸 [Ссылка на донат](https://donate.example.com)\n"
                 "Спасибо!"
             )
         else:
-            await event.message.answer("❌ Не удалось отправить ни одного файла. Сервис временно недоступен.")
+            await event.message.answer("❌ Не удалось отправить ни одного файла.")
 
-        # Отправляем описание поста, если есть
         if info.get('description'):
             await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
 
@@ -338,14 +312,14 @@ async def handle_url(event, url: str):
 max_bot = MaxBot(token=TOKEN)
 dp = Dispatcher()
 
-# ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
+# ----------------------------- ОБРАБОТЧИКИ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
     text = event.message.body.text or ''
     if text == '/start':
         await event.message.answer(
             "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
-            "Просто отправь мне ссылку на пост или видео."
+            "Просто отправь мне ссылку."
         )
         return
 
@@ -362,7 +336,7 @@ async def handle_message(event: MessageCreated):
 async def handle_bot_started(event: BotStarted):
     await max_bot.api.send_message(
         chat_id=event.chat_id,
-        text="👋 Привет! Я бот для скачивания видео. Просто отправь мне ссылку."
+        text="👋 Привет! Я бот для скачивания видео. Отправь мне ссылку."
     )
 
 # ----------------------------- ЗАПУСК -----------------------------
