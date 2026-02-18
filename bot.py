@@ -109,23 +109,25 @@ class MaxAPI:
                 return await resp.json()
 
     async def get_upload_info(self, media_type: str) -> dict:
-        """Запрашивает информацию для загрузки файла. Возвращает словарь с ключами 'url' и, для video/audio, 'token'."""
+        """
+        Запрашивает информацию для загрузки файла.
+        Возвращает словарь с ключами 'url' и, для video/audio, 'token'.
+        """
         endpoint = f"uploads?type={media_type}"
         data = await self._request('POST', endpoint)
         return data
 
-    async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        payload = {"chat_id": chat_id, "text": text, "attachments": attachments or []}
-        return await self._request('POST', 'messages', json=payload)
-
     async def send_media(self, chat_id: int, caption: str, file_path: str, media_type: str):
-    """Загружает файл и отправляет его как медиа."""
-    # 1. Получаем URL для загрузки и, для видео/аудио, сразу токен
+        """
+        Загружает файл и отправляет его как медиа.
+        Поддерживает типы: video, audio, image, file.
+        """
+        # 1. Получаем URL для загрузки и, для видео/аудио, сразу токен
         upload_info = await self.get_upload_info(media_type)
         upload_url = upload_info['url']
         video_token = upload_info.get('token')  # Будет None для image/file
 
-    # 2. Загружаем файл на полученный URL
+        # 2. Загружаем файл на полученный URL
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -136,18 +138,27 @@ class MaxAPI:
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
                     result = await resp.json()
-                # 3. Получаем токен из ответа (для image/file) или используем video_token
+                    # 3. Получаем токен из ответа (для image/file) или используем video_token
                     token = video_token or result['token']
 
-    # 4. Небольшая пауза, чтобы файл обработался (рекомендация из документации)
+        # 4. Небольшая пауза, чтобы файл обработался (рекомендация из документации)
         await asyncio.sleep(2)
 
-    # 5. Формируем вложение и отправляем сообщение
+        # 5. Формируем вложение и отправляем сообщение
         attachment = {
             "type": media_type,
             "payload": {"token": token}
         }
         return await self.send_message(chat_id, caption, [attachment])
+
+    async def send_message(self, chat_id: int, text: str, attachments: list = None):
+        """Отправляет сообщение в чат."""
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "attachments": attachments or []
+        }
+        return await self._request('POST', 'messages', json=payload)
 
 # ----------------------------- ОБРАБОТКА ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
