@@ -165,15 +165,15 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    # Пытаемся получить JSON, но если не получается – пробрасываем исключение
-                    try:
+
+                    # Проверяем, что ответ — JSON
+                    if 'application/json' in resp.content_type:
                         result = await resp.json()
-                    except aiohttp.ContentTypeError:
-                        # Если ответ не JSON, читаем как текст для отладки
+                        token = video_token or result['token']
+                    else:
                         text = await resp.text()
-                        logger.error(f"Ответ не JSON: {text[:200]}")
-                        raise Exception(f"Unexpected response: {resp.content_type}")
-                    token = video_token or result['token']
+                        logger.error(f"Unexpected content-type: {resp.content_type}, body: {text[:200]}")
+                        raise Exception(f"Unexpected response from MAX: {resp.content_type}")
 
         await asyncio.sleep(2)
         attachment = {"type": media_type, "payload": {"token": token}}
@@ -192,19 +192,27 @@ async def upload_to_yadisk(file_path: str) -> str | None:
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
     client = yadisk.AsyncClient(token=YADISK_TOKEN)
     try:
-        # Создаём папку /bot_uploads, если её нет
+        # Создаём папку, если её нет (игнорируем ошибку, если уже существует)
         try:
             await client.mkdir("/bot_uploads")
-            logger.info("📁 Папка /bot_uploads создана на Яндекс.Диске")
-        except yadisk.exceptions.PathExistsError:
-            pass  # папка уже существует
-        except Exception as e:
-            logger.warning(f"Не удалось создать папку /bot_uploads: {e}")
+        except yadisk.exceptions.ConflictError:
+            pass  # папка уже есть
 
         disk_path = f"/bot_uploads/{os.path.basename(file_path)}"
         await client.upload(file_path, disk_path, overwrite=True)
-        await client.publish(disk_path)
-        public_url = await client.get_public_link(disk_path)
+
+        # Публикуем файл и получаем публичную ссылку
+        publish_result = await client.publish(disk_path)
+        # В ответе publish может быть public_key
+        if isinstance(publish_result, dict) and 'public_key' in publish_result:
+            public_url = f"https://disk.yandex.ru/d/{publish_result['public_key']}"
+        else:
+            # Если нет, получаем метаданные
+            meta = await client.get_meta(disk_path)
+            public_url = meta.get('public_url')
+            if not public_url:
+                raise Exception("Не удалось получить публичную ссылку")
+
         logger.info(f"✅ Файл загружен на Яндекс.Диск: {public_url}")
         return public_url
     except Exception as e:
@@ -212,7 +220,6 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         return None
     finally:
         await client.close()
-
 # ----------------------------- ОСНОВНАЯ ЛОГИКА -----------------------------
 async def handle_url(event, url: str):
     chat_id = event.message.recipient.chat_id
