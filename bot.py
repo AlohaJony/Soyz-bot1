@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
+USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 # ----------------------------- НАСТРОЙКИ -----------------------------
 TOKEN = os.getenv('BOT_TOKEN')
@@ -55,6 +56,8 @@ def extract_info(url: str) -> dict | None:
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
+        'user_agent': USER_AGENT,
+        'headers': {'Accept-Language': 'en-US,en;q=0.9'},
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -121,6 +124,8 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
         'outtmpl': str(file_path),
         'quiet': True,
         'no_warnings': True,
+        'user_agent': USER_AGENT,
+        'headers': {'Accept-Language': 'en-US,en;q=0.9'},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
