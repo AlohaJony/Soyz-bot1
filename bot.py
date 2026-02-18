@@ -133,17 +133,18 @@ class MaxAPI:
                 if resp.status == 204:
                     return None
                 return await resp.json()
+            
     async def get_upload_url(self, media_type: str) -> str:
-    """Запрашивает URL для загрузки файла. media_type: 'image', 'video' или 'file'."""
-    # Определяем правильный эндпоинт на основе типа
+        """Запрашивает URL для загрузки файла. media_type: 'image', 'video' или 'file'."""
+        # Определяем правильный эндпоинт на основе типа
         if media_type == 'video':
             endpoint = 'videos/upload'
         elif media_type == 'image':
             endpoint = 'images/upload'
         else:
             endpoint = 'files/upload'  # для документов и прочего
-    
-    # Отправляем POST-запрос (возможно, без тела)
+
+        # Отправляем POST-запрос (без тела, так как получаем только URL)
         data = await self._request('POST', endpoint)
         return data['url'] 
 
