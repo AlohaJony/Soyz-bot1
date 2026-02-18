@@ -26,6 +26,19 @@ Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Очистка старых файлов при запуске
+def cleanup_old_files():
+    try:
+        now = time.time()
+        for f in Path(DOWNLOAD_DIR).glob('*'):
+            if f.is_file() and now - f.stat().st_mtime > 3600:
+                f.unlink()
+                logger.info(f"🧹 Удалён старый файл: {f.name}")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке: {e}")
+
+cleanup_old_files()
+
 # ----------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------------
 def format_duration(seconds: float) -> str:
     total = int(seconds)
