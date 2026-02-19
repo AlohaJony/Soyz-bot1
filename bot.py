@@ -243,7 +243,7 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         await client.close()
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
-async def handle_url(event, url: str, chat_id: int):
+async def handle_url(event, url, chat_id):
     # 1. Извлекаем chat_id правильно. 
     # В MAX API для ответа в тот же чат используем event.message.chat_id
     chat_id = event.message.chat_id
@@ -404,38 +404,35 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    # 1. Извлекаем chat_id (в MAX API он обычно в message.recipient.chat_id)
-    try:
-        current_chat_id = event.message.recipient.chat_id
-    except AttributeError:
-        # Запасной вариант, если структура отличается
+    # Пытаемся достать ID всеми возможными способами по приоритету
+    current_chat_id = None
+    
+    # Способ 1: через recipient (самый вероятный для MAX)
+    if hasattr(event.message, 'recipient'):
+        current_chat_id = getattr(event.message.recipient, 'chat_id', None)
+        
+    # Способ 2: напрямую из сообщения
+    if not current_chat_id:
         current_chat_id = getattr(event.message, 'chat_id', None)
 
+    # Способ 3: если всё упало, берем из логов (event.chat_id — но мы уже знаем, что его там нет)
     if not current_chat_id:
-        logger.error(f"❌ Не удалось найти chat_id в событии: {event.model_dump()}")
+        logger.error("❌ Не удалось найти chat_id. Проверьте структуру event.")
         return
 
-    # 2. Логика обработки текста
     text = event.message.body.text or ''
     
     if text == '/start':
-        # Метод answer сам знает, куда отвечать
-        await event.message.answer(
-            "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
-            "Просто отправь мне ссылку."
-        )
+        await event.message.answer("👋 Привет! Отправь мне ссылку на видео.")
         return
 
-    # 3. Поиск ссылок
-    if 'http://' in text or 'https://' in text:
+    if 'http' in text:
         urls = re.findall(r'https?://\S+', text)
         if urls:
-            # ПЕРЕДАЕМ current_chat_id в handle_url
+            # ПЕРЕДАЕМ НАЙДЕННЫЙ ID
             await handle_url(event, urls[0], current_chat_id)
-        else:
-            await event.message.answer("❌ Не удалось найти ссылку.")
     else:
-        await event.message.answer("Отправь мне ссылку на видео или пост.")
+        await event.message.answer("Жду ссылку!")
 
 
 # ----------------------------- ЗАПУСК -----------------------------
