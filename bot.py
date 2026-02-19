@@ -288,12 +288,14 @@ async def handle_url(event, url: str):
                        f"🔗 {entry_info['webpage_url']}")
 
         try:
-            await max_api.send_media(chat_id, caption, file_path, media_type)
+            await max_api.send_media(caption, file_path, media_type)  # без chat_id
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
+            # ... fallback
             yadisk_url = await upload_to_yadisk(file_path)
+            
             if yadisk_url:
                 await event.message.answer(
                     f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
