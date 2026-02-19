@@ -204,9 +204,11 @@ class MaxAPI:
         logger.info(f"Отправка вложения пользователю {user_id} как file: {attachment}")
         return await self.send_message(user_id, caption, [attachment])
 
-    async def send_message(self, user_id: int, text: str, attachments: list = None):
+    async def send_message(self, recipient_id: int, text: str, attachments: list = None):
+        # Логика определения: если ID положительный и большой — это обычно chat_id
+        # Но лучше явно передавать, что это: chat_id или user_id
         payload = {
-            "user_id": int(user_id), # Гарантируем тип Integer
+            "chat_id": int(recipient_id), # Используем chat_id из логов (243589793)
             "text": text
         }
         if attachments:
