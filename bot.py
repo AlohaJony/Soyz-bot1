@@ -298,23 +298,25 @@ async def handle_url(event, url: str):
         user_id = event.message.sender.user_id
 
         try:
-            # Пытаемся отправить через MAX
             await max_api.send_media(user_id, caption, file_path, media_type)
-            logger.info("✅ Медиа отправлено через MAX")
-            return True, None  # Успех, ссылка не нужна
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
-            # Fallback на Яндекс.Диск
-            yadisk_url = await upload_to_yadisk(file_path)
-            if yadisk_url:
-                await event.message.answer(
-                    f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
-                    f"🔗 [Скачать]({yadisk_url})"
-                )
-                return True, yadisk_url  # Успех через fallback
-            else:
-                await event.message.answer(f"❌ Не удалось отправить файл{' ' + str(file_index) if file_index else ''}.")
+            # Пробуем отправить только текст
+            try:
+                await max_api.send_message(user_id, caption)  # без attachments
+                logger.info("✅ Текст отправлен, проблема во вложении")
+                # Удаляем файл, так как он не понадобился
+                Path(file_path).unlink(missing_ok=True)
+                # Но пользователь не получил видео – нужно уведомить
+                await event.message.answer("❌ Видео не удалось отправить, но текст сохранён.")
                 return False, None
+            except Exception as e2:
+                logger.error(f"Даже текст не ушёл: {e2}")
+                # тогда fallback на Яндекс.Диск
+                yadisk_url = await upload_to_yadisk(file_path)
+                if yadisk_url:
+                    await event.message.answer(f"⚠️ Ссылка на видео: {yadisk_url}")
+                    return True, yadisk_url
 
     if info['type'] == 'single':
         ext = info.get('ext', 'mp4')
