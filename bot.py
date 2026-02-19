@@ -84,11 +84,11 @@ class MaxAPI:
                             raise Exception("No token in upload response")
                         return result['token']
 
-    async def send_media(self, user_id: int, caption: str, file_path: str):
+    async def send_media(self, chat_id: int, caption: str, file_path: str):
         logger.info("📤 Этап 1: получение URL для загрузки...")
         upload_info = await self.get_upload_info('video')
         upload_url = upload_info['url']
-        token_from_step1 = upload_info.get('token')  # токен с первого шага
+        token_from_step1 = upload_info.get('token')
         logger.info(f"🔑 Получен токен с первого шага: {token_from_step1[:20]}...")
         logger.info("📤 Этап 2: загрузка файла...")
         await self.upload_file(upload_url, file_path, 'video')
@@ -96,11 +96,11 @@ class MaxAPI:
         await asyncio.sleep(2)
         logger.info("📤 Этап 4: отправка сообщения с вложением...")
         attachment = {"type": "video", "payload": {"token": token_from_step1}}
-        return await self.send_message(user_id, caption, [attachment])
+        return await self.send_message(chat_id, caption, [attachment])
 
-    async def send_message(self, user_id: int, text: str, attachments: list = None):
+    async def send_message(self, chat_id: int, text: str, attachments: list = None):
         payload = {
-            "user_id": user_id,
+            "chat_id": chat_id,
             "body": {
                 "text": text,
                 "attachments": attachments or []
@@ -197,7 +197,7 @@ async def handle_message(event: MessageCreated):
     max_api = MaxAPI(TOKEN)
 
     try:
-        await max_api.send_media(user_id, caption, str(file_path))
+        await max_api.send_media(chat_id, caption, str(file_path))
         logger.info("✅ Видео успешно отправлено через MAX")
         await event.message.answer("✅ Видео отправлено!")
     except Exception as e:
