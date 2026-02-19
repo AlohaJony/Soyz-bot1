@@ -206,12 +206,23 @@ class MaxAPI:
 
     async def send_message(self, user_id: int, text: str, attachments: list = None):
         payload = {
-            "user_id": user_id,
-            "text": text,
-            "attachments": attachments or []
+            "user_id": int(user_id), # Гарантируем тип Integer
+            "text": text
         }
-        logger.info(f"Отправка сообщения пользователю {user_id}: {payload}")
-        return await self._request('POST', 'messages', json=payload)
+        if attachments:
+            payload["attachments"] = attachments
+
+        # КРИТИЧНО: Используем json=payload, а не data=
+        url = f"{self.base_url}/messages"
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=self.headers, json=payload) as resp:
+                result_text = await resp.text()
+                if resp.status >= 400:
+                    logger.error(f"Ошибка отправки: {result_text}")
+                    # Если здесь Unknown recipient — значит сервер не видит user_id в JSON
+                    return None
+                return await resp.json()
+
 
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
