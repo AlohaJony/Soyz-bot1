@@ -63,7 +63,7 @@ class MaxAPI:
         logger.info(f"📥 Получен URL для загрузки {media_type}: {data.get('url')}")
         return data
 
-    async def upload_file(self, upload_url: str, file_path: str) -> str:
+    async def upload_file(self, upload_url: str, file_path: str, media_type: str):
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -73,22 +73,29 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    result = await resp.json()
-                    if 'token' not in result:
-                        raise Exception("No token in upload response")
-                    logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
-                    return result['token']
+                    if media_type == 'video':
+                        # Для видео просто проверяем статус, токен уже есть с первого шага
+                        logger.debug("Video uploaded successfully, ignoring response body")
+                        return None
+                    else:
+                        # Для других типов ожидаем JSON с токеном
+                        result = await resp.json()
+                        if 'token' not in result:
+                            raise Exception("No token in upload response")
+                        return result['token']
 
     async def send_media(self, user_id: int, caption: str, file_path: str):
         logger.info("📤 Этап 1: получение URL для загрузки...")
         upload_info = await self.get_upload_info('video')
         upload_url = upload_info['url']
+        token_from_step1 = upload_info.get('token')  # токен с первого шага
+        logger.info(f"🔑 Получен токен с первого шага: {token_from_step1[:20]}...")
         logger.info("📤 Этап 2: загрузка файла...")
-        token = await self.upload_file(upload_url, file_path)
+        await self.upload_file(upload_url, file_path, 'video')
         logger.info("📤 Этап 3: пауза 2 секунды...")
         await asyncio.sleep(2)
         logger.info("📤 Этап 4: отправка сообщения с вложением...")
-        attachment = {"type": "video", "payload": {"token": token}}
+        attachment = {"type": "video", "payload": {"token": token_from_step1}}
         return await self.send_message(user_id, caption, [attachment])
 
     async def send_message(self, user_id: int, text: str, attachments: list = None):
