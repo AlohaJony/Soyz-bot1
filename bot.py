@@ -230,16 +230,15 @@ class MaxAPI:
 
     async def send_message(self, chat_id: int, text: str, attachments: list = None):
         """
-        Отправляет сообщение в указанный чат.
-        В теле обязательно поле chatId (строка).
+        Отправляет сообщение в указанный чат через эндпоинт /chats/{chatId}/messages.
         """
+        path = f"chats/{chat_id}/messages"  # chat_id в URL
         payload = {
-            "chatId": str(chat_id),       # именно chatId, а не chat_id
             "text": text,
             "attachments": attachments or []
         }
-        logger.info(f"Отправка сообщения в чат {chat_id}: {payload}")
-        return await self._request('POST', 'messages', json=payload)
+        logger.info(f"Отправка сообщения в чат {chat_id} через {path}: {payload}")
+        return await self._request('POST', path, json=payload)
     
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
