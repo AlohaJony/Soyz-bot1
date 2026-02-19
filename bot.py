@@ -164,14 +164,15 @@ class MaxAPI:
                     return text
 
     async def get_upload_info(self, media_type: str) -> dict:
-        endpoint = f"uploads?type={media_type}"
+        # Всегда используем type=file для загрузки
+        endpoint = f"uploads?type=file"
         data = await self._request('POST', endpoint)
         if isinstance(data, str):
             raise Exception(f"Expected JSON, got: {data}")
-        logger.info(f"Upload info for {media_type}: url={data.get('url')}, token={data.get('token')}")
+        logger.info(f"Upload info for file: url={data.get('url')}")
         return data
 
-    async def upload_file(self, upload_url: str, file_path: str, media_type: str):
+    async def upload_file(self, upload_url: str, file_path: str):
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -181,31 +182,26 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    if media_type in ('video', 'audio'):
-                        logger.debug("Video uploaded successfully")
-                        return None
-                    else:
-                        result = await resp.json()
-                        if 'token' not in result:
-                            raise Exception("No token in upload response")
-                        return result['token']
+                    # Для file ожидаем JSON с токеном
+                    result = await resp.json()
+                    if 'token' not in result:
+                        raise Exception("No token in upload response")
+                    return result['token']
 
-    async def send_media(self, user_id: int, caption: str, file_path: str, media_type: str):
-        upload_info = await self.get_upload_info(media_type)
+    async def send_media(self, user_id: int, caption: str, file_path: str):
+        # Шаг 1: получаем URL для загрузки
+        upload_info = await self.get_upload_info('file')
         upload_url = upload_info['url']
-        token_from_step1 = upload_info.get('token') if media_type in ('video', 'audio') else None
 
-        if media_type in ('video', 'audio'):
-            await self.upload_file(upload_url, file_path, media_type)
-            token = token_from_step1
-        else:
-            token = await self.upload_file(upload_url, file_path, media_type)
+        # Шаг 2: загружаем файл и получаем токен
+        token = await self.upload_file(upload_url, file_path)
 
+        # Шаг 3: пауза для обработки
         await asyncio.sleep(2)
-        # 🔁 ИЗМЕНЕНИЕ: для видео и аудио отправляем как file
-        attachment_type = 'file' if media_type in ('video', 'audio') else media_type
-        attachment = {"type": attachment_type, "payload": {"token": token}}
-        logger.info(f"Отправка вложения пользователю {user_id} как {attachment_type}: {attachment}")
+
+        # Шаг 4: отправляем сообщение с вложением типа file
+        attachment = {"type": "file", "payload": {"token": token}}
+        logger.info(f"Отправка вложения пользователю {user_id} как file: {attachment}")
         return await self.send_message(user_id, caption, [attachment])
 
     async def send_message(self, user_id: int, text: str, attachments: list = None):
@@ -253,9 +249,7 @@ async def handle_url(event, url: str):
     max_api = MaxAPI(TOKEN)
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
-        ext = Path(file_path).suffix.lstrip('.')
-        media_type = 'video' if ext in ('mp4', 'mov', 'avi', 'mkv') else 'image'
-
+        # Для file тип медиа не нужен, используем универсальную отправку
         if file_index is not None and total_files is not None:
             caption = (f"📦 Файл {file_index}/{total_files}\n"
                        f"🎬 {entry_info['title']}\n"
@@ -271,7 +265,7 @@ async def handle_url(event, url: str):
         user_id = event.message.sender.user_id
 
         try:
-            await max_api.send_media(user_id, caption, file_path, media_type)
+            await max_api.send_media(user_id, caption, file_path)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
