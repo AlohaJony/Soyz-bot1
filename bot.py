@@ -243,7 +243,7 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         await client.close()
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
-async def handle_url(event, url: str):
+async def handle_url(event, url: str, chat_id: int):
     # 1. Извлекаем chat_id правильно. 
     # В MAX API для ответа в тот же чат используем event.message.chat_id
     chat_id = event.message.chat_id
@@ -299,7 +299,7 @@ async def handle_url(event, url: str):
         user_id = event.message.sender.user_id
 
         try:
-            await max_api.send_media(event.chat_id, caption, file_path)
+             await max_api.send_media(chat_id, info.get('title', 'Video'), file_path)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
@@ -404,26 +404,39 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    # В этой библиотеке chat_id лежит в корне event, а не в message
-    current_chat_id = event.chat_id  
+    # 1. Извлекаем chat_id (в MAX API он обычно в message.recipient.chat_id)
+    try:
+        current_chat_id = event.message.recipient.chat_id
+    except AttributeError:
+        # Запасной вариант, если структура отличается
+        current_chat_id = getattr(event.message, 'chat_id', None)
+
+    if not current_chat_id:
+        logger.error(f"❌ Не удалось найти chat_id в событии: {event.model_dump()}")
+        return
+
+    # 2. Логика обработки текста
     text = event.message.body.text or ''
     
     if text == '/start':
+        # Метод answer сам знает, куда отвечать
         await event.message.answer(
             "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
             "Просто отправь мне ссылку."
         )
         return
 
+    # 3. Поиск ссылок
     if 'http://' in text or 'https://' in text:
         urls = re.findall(r'https?://\S+', text)
         if urls:
-            # Передаем не только event, но и чистый chat_id для надежности
+            # ПЕРЕДАЕМ current_chat_id в handle_url
             await handle_url(event, urls[0], current_chat_id)
         else:
             await event.message.answer("❌ Не удалось найти ссылку.")
     else:
         await event.message.answer("Отправь мне ссылку на видео или пост.")
+
 
 # ----------------------------- ЗАПУСК -----------------------------
 async def main():
