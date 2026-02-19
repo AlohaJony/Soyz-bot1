@@ -299,7 +299,7 @@ async def handle_url(event, url, chat_id):
         user_id = event.message.sender.user_id
 
         try:
-             await max_api.send_media(chat_id, info.get('title', 'Video'), file_path)
+            await max_api.send_media(chat_id, info.get('title', 'Video'), file_path)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
