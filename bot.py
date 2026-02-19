@@ -148,8 +148,15 @@ class MaxAPI:
 
     async def _request(self, method: str, path: str, **kwargs):
         url = f"{self.base_url}/{path.lstrip('/')}"
+        # Если передаётся json, добавляем заголовок Content-Type
+        if 'json' in kwargs:
+            headers = self.headers.copy()
+            headers["Content-Type"] = "application/json"
+        else:
+            headers = self.headers
+
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=self.headers, **kwargs) as resp:
+            async with session.request(method, url, headers=headers, **kwargs) as resp:
                 if resp.status >= 400:
                     text = await resp.text()
                     logger.error(f"MAX API error {resp.status}: {text}")
@@ -162,63 +169,6 @@ class MaxAPI:
                     text = await resp.text()
                     logger.debug(f"Non-JSON response: {text[:200]}")
                     return text
-
-    async def get_upload_info(self, media_type: str) -> dict:
-        # Всегда используем type=file для загрузки
-        endpoint = f"uploads?type=file"
-        data = await self._request('POST', endpoint)
-        if isinstance(data, str):
-            raise Exception(f"Expected JSON, got: {data}")
-        logger.info(f"Upload info for file: url={data.get('url')}")
-        return data
-
-    async def upload_file(self, upload_url: str, file_path: str):
-        with open(file_path, 'rb') as f:
-            form = aiohttp.FormData()
-            form.add_field('data', f, filename=os.path.basename(file_path))
-            async with aiohttp.ClientSession() as session:
-                async with session.post(upload_url, data=form) as resp:
-                    if resp.status != 200:
-                        text = await resp.text()
-                        logger.error(f"Upload failed: {resp.status} {text}")
-                        raise Exception(f"Upload failed: {resp.status}")
-                    # Для file ожидаем JSON с токеном
-                    result = await resp.json()
-                    if 'token' not in result:
-                        raise Exception("No token in upload response")
-                    return result['token']
-
-    async def send_media(self, chat_id: int, caption: str, file_path: str):
-        upload_info = await self.get_upload_info('file')
-        token = await self.upload_file(upload_info['url'], file_path)
-    
-        await asyncio.sleep(1) # Небольшая пауза для обработки сервером
-    
-        attachment = {"type": "file", "payload": {"token": token}}
-        # Вызываем обновленный send_message с параметром chat_id
-        return await self.send_message(chat_id=chat_id, text=caption, attachments=[attachment])
-
-    async def send_message(self, chat_id: int = None, user_id: int = None, text: str = "", attachments: list = None):
-        payload = {"text": text}
-    
-        # Если передан chat_id, используем его (приоритетно для медиа)
-        if chat_id:
-            payload["chat_id"] = int(chat_id)
-        elif user_id:
-            payload["user_id"] = int(user_id)
-        
-        if attachments:
-            payload["attachments"] = attachments
-
-        async with aiohttp.ClientSession() as session:
-            # Обязательно json=payload для правильных заголовков
-            async with session.post(f"{self.base_url}/messages", headers=self.headers, json=payload) as resp:
-                res_text = await resp.text()
-                if resp.status >= 400:
-                    logger.error(f"MAX API Error: {res_text}")
-                    return None
-                return await resp.json()
-
 
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
@@ -243,44 +193,17 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         await client.close()
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
-async def handle_url(event, url, chat_id):
-    # 1. Извлекаем chat_id правильно. 
-    # В MAX API для ответа в тот же чат используем event.message.chat_id
-    chat_id = event.message.chat_id
-    
+async def handle_url(event, url: str):
+    chat_id = event.message.recipient.chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
-    # 2. Получаем инфо о видео
     info = await asyncio.to_thread(extract_info, url)
     if not info:
-        # Для редактирования сообщения используем методы из SDK
-        await status_msg.message.edit("❌ Не удалось получить информацию.")
+        await status_msg.message.edit("❌ Не удалось получить информацию о контенте. Проверьте ссылку.")
         return
 
-    await status_msg.message.edit("📥 Начинаю скачивание видео...")
-    
-    # 3. Скачиваем файл
-    file_id = f"vid_{int(time.time())}"
-    file_path = await download_file(url, file_id, 'mp4')
-
-    if file_path:
-        await status_msg.message.edit("🚀 Отправляю видео в MAX...")
-        max_api = MaxAPI(TOKEN)
-        
-        # 4. КРИТИЧЕСКИЙ МОМЕНТ: Передаем chat_id (243589793 из ваших логов)
-        # Это исключит ошибку "Unknown recipient" при отправке вложения
-        try:
-            result = await max_api.send_media(chat_id, info.get('title', 'Ваше видео'), file_path)
-            if result:
-                await status_msg.message.edit("✅ Видео успешно отправлено!")
-            else:
-                # Если медиа не ушло, даем ссылку на Я.Диск (как запасной вариант)
-                await status_msg.message.edit("⚠️ Не удалось отправить файл напрямую, попробуйте ссылку выше.")
-        except Exception as e:
-            logger.error(f"Ошибка отправки медиа: {e}")
-            await status_msg.message.edit("❌ Ошибка при передаче файла в мессенджер.")
-    else:
-        await status_msg.message.edit("❌ Ошибка при скачивании файла на сервер.")
+    await status_msg.message.edit("📥 Начинаю загрузку...")
+    max_api = MaxAPI(TOKEN)
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
         # Для file тип медиа не нужен, используем универсальную отправку
@@ -299,7 +222,7 @@ async def handle_url(event, url, chat_id):
         user_id = event.message.sender.user_id
 
         try:
-            await max_api.send_media(chat_id, info.get('title', 'Video'), file_path)
+            await max_api.send_media(user_id, caption, file_path)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
@@ -404,36 +327,29 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    # Пытаемся достать ID всеми возможными способами по приоритету
-    current_chat_id = None
-    
-    # Способ 1: через recipient (самый вероятный для MAX)
-    if hasattr(event.message, 'recipient'):
-        current_chat_id = getattr(event.message.recipient, 'chat_id', None)
-        
-    # Способ 2: напрямую из сообщения
-    if not current_chat_id:
-        current_chat_id = getattr(event.message, 'chat_id', None)
-
-    # Способ 3: если всё упало, берем из логов (event.chat_id — но мы уже знаем, что его там нет)
-    if not current_chat_id:
-        logger.error("❌ Не удалось найти chat_id. Проверьте структуру event.")
-        return
-
     text = event.message.body.text or ''
-    
     if text == '/start':
-        await event.message.answer("👋 Привет! Отправь мне ссылку на видео.")
+        await event.message.answer(
+            "👋 Привет! Я бот для скачивания видео из YouTube, Instagram и других соцсетей.\n"
+            "Просто отправь мне ссылку."
+        )
         return
 
-    if 'http' in text:
+    if 'http://' in text or 'https://' in text:
         urls = re.findall(r'https?://\S+', text)
         if urls:
-            # ПЕРЕДАЕМ НАЙДЕННЫЙ ID
-            await handle_url(event, urls[0], current_chat_id)
+            await handle_url(event, urls[0])
+        else:
+            await event.message.answer("❌ Не удалось найти ссылку.")
     else:
-        await event.message.answer("Жду ссылку!")
+        await event.message.answer("Отправь мне ссылку на видео или пост.")
 
+@dp.bot_started()
+async def handle_bot_started(event: BotStarted):
+    await max_bot.api.send_message(
+        chat_id=event.chat_id,
+        text="👋 Привет! Я бот для скачивания видео. Отправь мне ссылку."
+    )
 
 # ----------------------------- ЗАПУСК -----------------------------
 async def main():
