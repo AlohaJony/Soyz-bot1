@@ -280,7 +280,7 @@ async def handle_url(event, url: str):
             logger.error(f"Ошибка отправки медиа: {e}")
             await status_msg.message.edit("❌ Ошибка при передаче файла в мессенджер.")
     else:
-        await status_msg.message.edit("❌ Ошибка при скачивании файла на сервер."))
+        await status_msg.message.edit("❌ Ошибка при скачивании файла на сервер.")
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
         # Для file тип медиа не нужен, используем универсальную отправку
