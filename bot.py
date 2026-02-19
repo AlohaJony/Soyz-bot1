@@ -51,11 +51,6 @@ def format_duration(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 def extract_info(url: str) -> dict | None:
-    """
-    Извлекает информацию о контенте через yt-dlp.
-    Для Instagram, если пост содержит несколько файлов, берётся только первый.
-    Для остальных платформ плейлисты обрабатываются полностью.
-    """
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -67,13 +62,11 @@ def extract_info(url: str) -> dict | None:
             info = ydl.extract_info(url, download=False)
             extractor = info.get('extractor', '').lower()
 
-            # Логируем наличие описания
             if info.get('description'):
                 logger.info(f"📝 Получено описание: {info['description'][:100]}...")
             else:
                 logger.info("📝 Описание отсутствует в ответе yt-dlp")
 
-            # Если это Instagram и есть несколько записей – берём только первую
             if 'instagram' in extractor and 'entries' in info and info['entries']:
                 entry = info['entries'][0]
                 return {
@@ -87,7 +80,6 @@ def extract_info(url: str) -> dict | None:
                     'thumbnail': entry.get('thumbnail'),
                 }
 
-            # Обычный плейлист (YouTube плейлист, карусель другой соцсети)
             if 'entries' in info:
                 entries = []
                 for entry in info['entries']:
@@ -110,7 +102,6 @@ def extract_info(url: str) -> dict | None:
                     'description': info.get('description', '')
                 }
 
-            # Одиночное видео/изображение
             return {
                 'type': 'single',
                 'title': info.get('title', 'Без названия'),
@@ -211,8 +202,10 @@ class MaxAPI:
             token = await self.upload_file(upload_url, file_path, media_type)
 
         await asyncio.sleep(2)
-        attachment = {"type": media_type, "payload": {"token": token}}
-        logger.info(f"Отправка вложения пользователю {user_id}: {attachment}")
+        # 🔁 ИЗМЕНЕНИЕ: для видео и аудио отправляем как file
+        attachment_type = 'file' if media_type in ('video', 'audio') else media_type
+        attachment = {"type": attachment_type, "payload": {"token": token}}
+        logger.info(f"Отправка вложения пользователю {user_id} как {attachment_type}: {attachment}")
         return await self.send_message(user_id, caption, [attachment])
 
     async def send_message(self, user_id: int, text: str, attachments: list = None):
@@ -283,7 +276,7 @@ async def handle_url(event, url: str):
             return True, None
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
-            # Пробуем отправить только текст (для диагностики)
+            # Пробуем отправить только текст (диагностика)
             try:
                 await max_api.send_message(user_id, caption)
                 logger.info("✅ Текст отправлен, проблема во вложении")
@@ -312,7 +305,6 @@ async def handle_url(event, url: str):
         success, _ = await send_single_file(file_path, info)
         Path(file_path).unlink(missing_ok=True)
 
-        # Отправка описания и доната
         if success:
             if info.get('description'):
                 logger.info(f"📤 Отправка описания, длина {len(info['description'])}")
@@ -356,7 +348,6 @@ async def handle_url(event, url: str):
             Path(file_path).unlink(missing_ok=True)
 
         if any_success:
-            # Отправка описания поста и доната
             if info.get('description'):
                 logger.info(f"📤 Отправка описания поста, длина {len(info['description'])}")
                 await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
