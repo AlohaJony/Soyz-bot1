@@ -3,9 +3,9 @@ import logging
 import os
 import re
 import sys
-from pathlib import Path
-
+import aiohttp
 import yt_dlp
+from pathlib import Path
 from maxapi import Bot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
@@ -20,13 +20,90 @@ DOWNLOAD_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
+# ----------------------------- КЛАСС ДЛЯ РАБОТЫ С MAX (ИСПРАВЛЕННЫЙ) -----------------------------
+class MaxAPI:
+    def __init__(self, token: str):
+        self.token = token
+        self.base_url = "https://platform-api.max.ru"
+        self.headers = {"Authorization": token}
+
+    async def _request(self, method: str, path: str, **kwargs):
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        if 'json' in kwargs:
+            headers = self.headers.copy()
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        else:
+            headers = self.headers
+
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=headers, **kwargs) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    logger.error(f"MAX API error {resp.status}: {text}")
+                    raise Exception(f"MAX API error: {resp.status}")
+                if resp.status == 204:
+                    return None
+                try:
+                    return await resp.json()
+                except:
+                    text = await resp.text()
+                    logger.debug(f"Non-JSON response: {text[:200]}")
+                    return text
+
+    async def get_upload_info(self, media_type: str) -> dict:
+        endpoint = f"uploads?type={media_type}"
+        data = await self._request('POST', endpoint)
+        if isinstance(data, str):
+            raise Exception(f"Expected JSON, got: {data}")
+        logger.info(f"📥 Получен URL для загрузки {media_type}: {data.get('url')}")
+        return data
+
+    async def upload_file(self, upload_url: str, file_path: str) -> str:
+        with open(file_path, 'rb') as f:
+            form = aiohttp.FormData()
+            form.add_field('data', f, filename=os.path.basename(file_path))
+            async with aiohttp.ClientSession() as session:
+                async with session.post(upload_url, data=form) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"Upload failed: {resp.status} {text}")
+                        raise Exception(f"Upload failed: {resp.status}")
+                    result = await resp.json()
+                    if 'token' not in result:
+                        raise Exception("No token in upload response")
+                    logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
+                    return result['token']
+
+    async def send_media(self, user_id: int, caption: str, file_path: str):
+        logger.info("📤 Этап 1: получение URL для загрузки...")
+        upload_info = await self.get_upload_info('video')
+        upload_url = upload_info['url']
+        logger.info("📤 Этап 2: загрузка файла...")
+        token = await self.upload_file(upload_url, file_path)
+        logger.info("📤 Этап 3: пауза 2 секунды...")
+        await asyncio.sleep(2)
+        logger.info("📤 Этап 4: отправка сообщения с вложением...")
+        attachment = {"type": "video", "payload": {"token": token}}
+        return await self.send_message(user_id, caption, [attachment])
+
+    async def send_message(self, user_id: int, text: str, attachments: list = None):
+        payload = {
+            "user_id": user_id,
+            "body": {
+                "text": text,
+                "attachments": attachments or []
+            }
+        }
+        logger.info(f"📤 Отправка сообщения: {payload}")
+        return await self._request('POST', 'messages', json=payload)
+
 # ----------------------------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ -----------------------------
 def extract_info(url: str) -> dict | None:
-    """Извлекает информацию о видео (только для логов)."""
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -37,9 +114,8 @@ def extract_info(url: str) -> dict | None:
             info = ydl.extract_info(url, download=False)
             return {
                 'title': info.get('title', 'Без названия'),
-                'duration': info.get('duration', 0),
-                'uploader': info.get('uploader', 'Неизвестный'),
                 'ext': info.get('ext', 'mp4'),
+                'duration': info.get('duration', 0),
                 'description': info.get('description', '')
             }
         except Exception as e:
@@ -47,7 +123,6 @@ def extract_info(url: str) -> dict | None:
             return None
 
 def download_file(url: str, file_id: str, ext: str) -> Path | None:
-    """Скачивает видео и возвращает путь к файлу."""
     file_path = DOWNLOAD_DIR / f"{file_id}.{ext}"
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
@@ -74,59 +149,56 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ -----------------------------
 @dp.bot_started()
 async def on_bot_started(event: BotStarted):
-    logger.info(f"🚀 Бот запущен пользователем. chat_id={event.chat_id}, user_id={event.user.user_id if event.user else 'unknown'}")
+    logger.info(f"🚀 Бот запущен пользователем. chat_id={event.chat_id}")
 
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    # Собираем информацию о сообщении
-    user_id = event.message.sender.user_id if event.message.sender else None
-    chat_id = event.message.recipient.chat_id if event.message.recipient else None
+    user_id = event.message.sender.user_id
+    chat_id = event.message.recipient.chat_id
     text = event.message.body.text or ''
-    msg_id = event.message.body.mid if event.message.body else None
+    msg_id = event.message.body.mid
 
     logger.info("=" * 60)
-    logger.info(f"📩 Получено сообщение: user_id={user_id}, chat_id={chat_id}, msg_id={msg_id}")
+    logger.info(f"📩 Сообщение от user_id={user_id}, chat_id={chat_id}, msg_id={msg_id}")
     logger.info(f"Текст: {text[:200]}")
     logger.info("=" * 60)
 
-    # Проверяем, есть ли в тексте ссылка
+    # Проверяем наличие ссылки
     url_match = re.search(r'https?://\S+', text)
-    if url_match:
-        url = url_match.group()
-        logger.info(f"🔗 Обнаружена ссылка: {url}")
+    if not url_match:
+        await event.message.answer("Отправь ссылку на видео.")
+        return
 
-        # Этап 1: получение информации (только для логов)
-        info = extract_info(url)
-        if not info:
-            await event.message.answer("❌ Не удалось получить информацию о видео.")
-            return
-        logger.info(f"📋 Информация: {info['title']} ({info['duration']} сек)")
+    url = url_match.group()
+    logger.info(f"🔗 Ссылка: {url}")
 
-        # Этап 2: скачивание файла
-        file_id = re.sub(r'\W+', '', info['title'][:30])
-        file_path = download_file(url, file_id, info['ext'])
-        if not file_path:
-            await event.message.answer("❌ Не удалось скачать видео.")
-            return
-        logger.info(f"💾 Файл сохранён: {file_path}")
+    # Получаем информацию
+    info = extract_info(url)
+    if not info:
+        await event.message.answer("❌ Не удалось получить информацию о видео.")
+        return
 
-        # Этап 3: отправка файла обратно пользователю
-        try:
-            logger.info("📤 Отправка файла через answer_with_file...")
-            await event.message.answer_with_file(file_path=str(file_path))
-            logger.info("✅ Файл успешно отправлен")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при отправке файла: {e}", exc_info=True)
-            await event.message.answer("❌ Не удалось отправить видео.")
-        finally:
-            # Удаляем временный файл
-            file_path.unlink(missing_ok=True)
-            logger.info("🧹 Временный файл удалён")
-    else:
-        # Обычное сообщение – просто тестовый ответ
-        logger.info("🔄 Обычное сообщение, отправляем тестовый ответ...")
-        await event.message.answer("Привет! Отправь мне ссылку на видео.")
-        logger.info("✅ Ответ отправлен")
+    # Скачиваем
+    safe_title = re.sub(r'\W+', '', info['title'][:30])
+    file_path = download_file(url, safe_title, info['ext'])
+    if not file_path:
+        await event.message.answer("❌ Не удалось скачать видео.")
+        return
+
+    # Пробуем отправить через MAX
+    caption = f"🎬 {info['title']}\n📏 {info['duration']} сек"
+    max_api = MaxAPI(TOKEN)
+
+    try:
+        await max_api.send_media(user_id, caption, str(file_path))
+        logger.info("✅ Видео успешно отправлено через MAX")
+        await event.message.answer("✅ Видео отправлено!")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки через MAX: {e}", exc_info=True)
+        await event.message.answer("❌ Не удалось отправить видео через MAX.")
+    finally:
+        file_path.unlink(missing_ok=True)
+        logger.info("🧹 Временный файл удалён")
 
 # ----------------------------- ЗАПУСК -----------------------------
 async def main():
