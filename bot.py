@@ -404,8 +404,8 @@ dp = Dispatcher()
 # ----------------------------- ОБРАБОТЧИКИ СОБЫТИЙ -----------------------------
 @dp.message_created()
 async def handle_message(event: MessageCreated):
-    # Извлекаем chat_id, чтобы использовать его для отправки медиа
-    current_chat_id = event.message.chat_id 
+    # В этой библиотеке chat_id лежит в корне event, а не в message
+    current_chat_id = event.chat_id  
     text = event.message.body.text or ''
     
     if text == '/start':
