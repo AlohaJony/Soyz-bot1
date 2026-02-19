@@ -170,6 +170,47 @@ class MaxAPI:
                     logger.debug(f"Non-JSON response: {text[:200]}")
                     return text
 
+    async def get_upload_info(self, media_type: str) -> dict:
+        endpoint = f"uploads?type=file"
+        data = await self._request('POST', endpoint)
+        if isinstance(data, str):
+            raise Exception(f"Expected JSON, got: {data}")
+        logger.info(f"Upload info for file: url={data.get('url')}")
+        return data
+
+    async def upload_file(self, upload_url: str, file_path: str):
+        with open(file_path, 'rb') as f:
+            form = aiohttp.FormData()
+            form.add_field('data', f, filename=os.path.basename(file_path))
+            async with aiohttp.ClientSession() as session:
+                async with session.post(upload_url, data=form) as resp:
+                    if resp.status != 200:
+                        text = await resp.text()
+                        logger.error(f"Upload failed: {resp.status} {text}")
+                        raise Exception(f"Upload failed: {resp.status}")
+                    result = await resp.json()
+                    if 'token' not in result:
+                        raise Exception("No token in upload response")
+                    return result['token']
+
+    async def send_media(self, user_id: int, caption: str, file_path: str):
+        upload_info = await self.get_upload_info('file')
+        upload_url = upload_info['url']
+        token = await self.upload_file(upload_url, file_path)
+        await asyncio.sleep(2)
+        attachment = {"type": "file", "payload": {"token": token}}
+        logger.info(f"Отправка вложения пользователю {user_id} как file: {attachment}")
+        return await self.send_message(user_id, caption, [attachment])
+
+    async def send_message(self, user_id: int, text: str, attachments: list = None):
+        payload = {
+            "user_id": user_id,
+            "text": text,
+            "attachments": attachments or []
+        }
+        logger.info(f"Отправка сообщения пользователю {user_id}: {payload}")
+        return await self._request('POST', 'messages', json=payload)
+
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
     logger.info(f"📤 Яндекс.Диск: начало загрузки {file_path}")
