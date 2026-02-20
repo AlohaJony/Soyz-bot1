@@ -142,14 +142,15 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
 # ----------------------------- КЛАСС ДЛЯ РАБОТЫ CHEREZ SDK -----------------------------
 
 async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
-    # 1️⃣ Получаем upload URL через SDK
-    upload = await max_bot.api.get_upload_url(type="video")
+
+    # 1️⃣ Получаем upload URL
+    upload = await max_bot.get_upload_url(type="video")
 
     upload_url = upload.url
     token = upload.token
 
-    logger.info(f"📥 SDK upload URL получен")
-    logger.info(f"🔑 SDK token получен: {token[:20]}...")
+    logger.info("📥 Upload URL получен через SDK")
+    logger.info(f"🔑 Token получен: {token[:20]}...")
 
     # 2️⃣ Загружаем файл
     with open(file_path, "rb") as f:
@@ -169,16 +170,16 @@ async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
                 if "<retval>1</retval>" in text:
                     logger.info("✅ Upload успешен (retval=1)")
                 else:
-                    logger.warning(f"Ответ upload: {text[:200]}")
+                    logger.info(f"Ответ upload: {text[:200]}")
 
-    # 3️⃣ Отправляем сообщение через SDK
+    # 3️⃣ Отправляем сообщение
     delays = [2, 5, 10, 20]
 
     for attempt, delay in enumerate(delays, 1):
         try:
-            logger.info(f"📤 Попытка {attempt} отправки видео через SDK...")
+            logger.info(f"📤 Попытка {attempt} отправки видео...")
 
-            await max_bot.api.send_message(
+            await max_bot.send_message(
                 chat_id=chat_id,
                 text=caption,
                 attachments=[{
@@ -189,7 +190,7 @@ async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
                 }]
             )
 
-            logger.info("✅ Видео отправлено через SDK")
+            logger.info("✅ Видео отправлено")
             return
 
         except Exception as e:
