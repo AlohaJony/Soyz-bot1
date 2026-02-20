@@ -227,7 +227,7 @@ class MaxAPI:
         upload_data = await self.get_upload_url('video')
         upload_url = upload_data["url"]
         # Шаг 2: загружаем файл и получаем токен
-        token = upload_data["token']
+        token = upload_data["token"]
         # Шаг 3: отправляем сообщение с повторными попытками
         await self.upload_file(upload_url, file_path)                    
         attachment = {"type": "video", "payload": {"token": token}}
