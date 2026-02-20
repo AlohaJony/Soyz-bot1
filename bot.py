@@ -8,7 +8,7 @@ import yadisk
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-
+from maxapi.types import UploadType
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
@@ -144,7 +144,7 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
 async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
 
     # 1️⃣ Получаем upload URL
-    upload = await max_bot.get_upload_url(type="video")
+    upload = await max_bot.get_upload_url(type=UploadType.VIDEO)
 
     upload_url = upload.url
     token = upload.token
