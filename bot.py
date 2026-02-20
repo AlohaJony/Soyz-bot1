@@ -1,113 +1,149 @@
 import os
 import re
+import asyncio
 import logging
-from maxapi import Bot
-from maxapi.attachments import ImageAttachment, VideoAttachment, FileAttachment
+import aiohttp
+from pathlib import Path
 
-# Для загрузки файлов на Яндекс.Диск
-import requests
+from maxapi import Bot, Dispatcher
+from maxapi.types import MessageCreated
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------
-# Настройки
-# ----------------------
-MAX_BOT_TOKEN = os.getenv("BOT_TOKEN")  # Токен бота MAX
-YANDEX_DISK_TOKEN = os.getenv("YADISK_TOKEN")  # Токен Яндекс.Диск
-FALLBACK_FOLDER = "Telegram_Fallback"
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("BOT_TOKEN не задан")
 
-bot = Bot(MAX_BOT_TOKEN)
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
 
-# ----------------------
+DOWNLOAD_DIR = "downloads"
+Path(DOWNLOAD_DIR).mkdir(exist_ok=True)
+
+# -------------------------
 # Вспомогательные функции
-# ----------------------
-def extract_urls(text):
-    """Парсим ссылки из текста"""
-    return re.findall(r"https?://\S+", text)
+# -------------------------
 
-def save_to_yandex_disk(file_url, filename):
-    """Сохраняем файл на Яндекс.Диск как fallback"""
-    headers = {"Authorization": f"OAuth {YANDEX_DISK_TOKEN}"}
-    upload_url = "https://cloud-api.yandex.net/v1/disk/resources/upload"
-    params = {"path": f"{FALLBACK_FOLDER}/{filename}", "url": file_url, "overwrite": "true"}
-    resp = requests.post(upload_url, headers=headers, params=params)
-    if resp.status_code == 202:
-        logger.info(f"Сохранили {filename} на Яндекс.Диск")
+def extract_urls(text: str):
+    return re.findall(r"https?://\S+", text or "")
+
+
+async def upload_file_to_max(file_path: str, media_type: str):
+    """
+    media_type: 'image' или 'video'
+    """
+    upload = await bot.get_upload_url(media_type)
+
+    async with aiohttp.ClientSession() as session:
+        with open(file_path, "rb") as f:
+            data = aiohttp.FormData()
+            data.add_field("data", f, filename=os.path.basename(file_path))
+
+            async with session.post(upload.url, data=data) as resp:
+                if resp.status not in (200, 201):
+                    text = await resp.text()
+                    raise Exception(f"Upload error: {text}")
+
+    return upload.token
+
+
+async def download_file(url: str, filename: str):
+    file_path = Path(DOWNLOAD_DIR) / filename
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            content = await resp.read()
+            with open(file_path, "wb") as f:
+                f.write(content)
+
+    return str(file_path)
+
+
+# -------------------------
+# Обработка ссылки
+# -------------------------
+
+async def handle_url(event, url: str):
+    chat_id = event.chat_id  # ✅ правильный способ для твоей версии SDK
+
+    await bot.send_message(chat_id, "🔍 Обрабатываю ссылку...")
+
+    filename = url.split("/")[-1].split("?")[0]
+
+    if url.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+        media_type = "image"
+    elif url.lower().endswith((".mp4", ".mov", ".webm")):
+        media_type = "video"
     else:
-        logger.error(f"Не удалось сохранить {filename} на Яндекс.Диск: {resp.text}")
+        await bot.send_message(chat_id, "❌ Тип файла не поддерживается напрямую.")
+        return
 
-async def handle_url(event, url):
-    """Обрабатываем ссылку и отправляем в MAX"""
-    chat_id = event.message.body.chat_id
+    file_path = await download_file(url, filename)
+    if not file_path:
+        await bot.send_message(chat_id, "❌ Не удалось скачать файл.")
+        return
 
     try:
-        # Для картинок
-        if url.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
-            image = await event.api.uploadImage({"url": url})
-            await event.reply("Вот ваша картинка:", attachments=[image.toJson()])
-            return
+        token = await upload_file_to_max(file_path, media_type)
 
-        # Для видео
-        if url.lower().endswith((".mp4", ".mov", ".webm")):
-            video = await event.api.uploadVideo({"url": url})
-            await event.reply("Вот ваше видео:", attachments=[video.toJson()])
-            return
+        await bot.send_message(
+            chat_id=chat_id,
+            text="Готово ✅",
+            attachments=[
+                {
+                    "type": media_type,
+                    "payload": {
+                        "token": token
+                    }
+                }
+            ]
+        )
 
-        # Для Instagram (carousel)
-        if "instagram.com/p/" in url or "instagram.com/reel/" in url:
-            # Пример: получаем картинки и видео через сторонний сервис (например, Instaloader / API)
-            media_urls = get_instagram_media(url)  # твоя функция получения всех медиа в посте
-            attachments = []
-            for media in media_urls:
-                if media.lower().endswith((".jpg", ".png", ".webp")):
-                    img = await event.api.uploadImage({"url": media})
-                    attachments.append(img.toJson())
-                elif media.lower().endswith((".mp4", ".mov")):
-                    vid = await event.api.uploadVideo({"url": media})
-                    attachments.append(vid.toJson())
-            if attachments:
-                await event.reply("Вот медиа из Instagram:", attachments=attachments)
-                return
-
-        # Если не удалось определить, fallback на Яндекс.Диск
-        filename = url.split("/")[-1].split("?")[0]
-        save_to_yandex_disk(url, filename)
-        await event.reply(f"Ссылка сохранена на Яндекс.Диск: {filename}")
+        logger.info("Файл успешно отправлен")
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке URL {url}: {e}")
-        # Фолбэк на Яндекс.Диск
-        filename = url.split("/")[-1].split("?")[0]
-        save_to_yandex_disk(url, filename)
-        await event.reply(f"Не удалось обработать ссылку, сохранено на Яндекс.Диск: {filename}")
+        logger.error(f"Ошибка отправки: {e}")
+        await bot.send_message(chat_id, "❌ Ошибка отправки файла.")
 
-# ----------------------
-# Основной обработчик сообщений
-# ----------------------
-@bot.on("message_created")
-async def handle_message(event):
-    message_body = event.message.body
-    text = message_body.text or ""
-    chat_id = message_body.chat_id
+    finally:
+        try:
+            os.remove(file_path)
+        except:
+            pass
 
-    # Приветствие для нового пользователя
-    if not text.strip():
-        await event.reply("👋 Привет! Отправь ссылку на видео или пост.")
-        return
 
+# -------------------------
+# Обработчик сообщений
+# -------------------------
+
+@dp.message_created()
+async def handle_message(event: MessageCreated):
+    text = event.message.body.text or ""
     urls = extract_urls(text)
-    if not urls:
-        await event.reply("Не нашёл ссылок в сообщении 😅")
+
+    if text.startswith("/start"):
+        await bot.send_message(event.chat_id, "👋 Привет! Отправь ссылку.")
         return
 
-    # Обрабатываем каждую ссылку
+    if not urls:
+        await bot.send_message(event.chat_id, "Ссылки не найдены.")
+        return
+
     for url in urls:
         await handle_url(event, url)
 
-# ----------------------
-# Запуск бота
-# ----------------------
-if __name__ == "__main__":
+
+# -------------------------
+# Запуск
+# -------------------------
+
+async def main():
     logger.info("Бот запущен и слушает...")
-    bot.start()
+    await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
