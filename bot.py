@@ -216,7 +216,7 @@ class MaxAPI:
                             logger.info ("✅ Upload успешен (retval=1)")
                             return {"status": "ok"}
                         logger.error(f"❌ Неожиданный ответ upload: {text}")
-                        raise Exeption("Upload response is not valid")
+                        raise Exception("Upload response is not valid")
                     if 'token' not in result:
                         raise Exception("No token in upload response")
                     logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
@@ -305,17 +305,17 @@ async def handle_url(event, url: str):
                        f"⏱ {format_duration(entry_info['duration'])}\n"
                        f"🔗 {entry_info['webpage_url']}")
 
-        user_id = event.message.sender.user_id
+        chat_id = event.message.sender.chat_id
 
         try:
-            await max_api.send_media(user_id, caption, file_path)
+            await max_api.send_media(chat_id, caption, file_path)
             logger.info("✅ Медиа отправлено через MAX")
             return True, None
         except Exception as e:
             logger.error(f"Ошибка отправки через MAX: {e}")
             # Пробуем отправить только текст (диагностика)
             try:
-                await max_api.send_message(user_id, caption)
+                await max_api.send_message(chat_id, caption)
                 logger.info("✅ Текст отправлен, проблема во вложении")
             except Exception as e2:
                 logger.error(f"Даже текст не ушёл: {e2}")
