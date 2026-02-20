@@ -217,8 +217,6 @@ class MaxAPI:
                             return {"status": "ok"}
                         logger.error(f"❌ Неожиданный ответ upload: {text}")
                         raise Exception("Upload response is not valid")
-                    if 'token' not in result:
-                        raise Exception("No token in upload response")
                     logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
                     return result['token']
 
@@ -305,7 +303,7 @@ async def handle_url(event, url: str):
                        f"⏱ {format_duration(entry_info['duration'])}\n"
                        f"🔗 {entry_info['webpage_url']}")
 
-        chat_id = event.message.sender.chat_id
+        chat_id = event.message.recipient.chat_id
 
         try:
             await max_api.send_media(chat_id, caption, file_path)
