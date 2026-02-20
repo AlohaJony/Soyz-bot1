@@ -232,7 +232,7 @@ async def handle_url(event, url: str):
         return
 
     await status_msg.message.edit("📥 Начинаю загрузку...")
-    max_api = MaxAPI(TOKEN)
+   
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
 
