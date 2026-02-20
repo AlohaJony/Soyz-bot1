@@ -169,7 +169,7 @@ async def send_via_sdk(chat_id: int, entry: dict):
 
 # ----------------------------- ОБРАБОТКА URL -----------------------------
 async def handle_url(event, url: str):
-    chat_id = event.message.body.chat_id
+    chat_id = event.message.chat.id  # <-- правильно
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
     info = await asyncio.to_thread(extract_info, url)
@@ -185,7 +185,10 @@ async def handle_url(event, url: str):
     if info.get("description"):
         await event.message.answer(f"📝 Описание:\n\n{info['description'][:4000]}")
 
-    await status_msg.message.delete(missing_ok=True)
+    try:
+        await status_msg.message.delete()
+    except:
+        pass
 
 # ----------------------------- СОБЫТИЯ MAX -----------------------------
 @dp.message_created()
@@ -199,10 +202,6 @@ async def handle_message(event: MessageCreated):
         await handle_url(event, urls[0])
     else:
         await event.message.answer("❌ Не удалось найти ссылку.")
-
-@dp.bot_started()
-async def handle_bot_started(event: BotStarted):
-    await max_bot.api.send_message_to_chat(event.chat_id, "👋 Бот запущен. Отправь ссылку на видео/пост.")
 
 # ----------------------------- ЗАПУСК -----------------------------
 async def main():
