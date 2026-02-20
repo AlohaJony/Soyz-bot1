@@ -8,7 +8,6 @@ import yadisk
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-from maxapi.enums import UploadType
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
@@ -144,7 +143,7 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
 async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
 
     # 1️⃣ Получаем upload URL
-    upload = await max_bot.get_upload_url(type=UploadType.VIDEO)
+    upload = await max_bot.get_upload_url("video")
 
     upload_url = upload.url
     token = upload.token
@@ -223,20 +222,21 @@ async def upload_to_yadisk(file_path: str) -> str | None:
         await client.close()
 
 # ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
+# ----------------------------- ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ССЫЛОК -----------------------------
 async def handle_url(event, url: str):
-    chat_id = event.message.recipient.chat_id
+    chat_id = event.message.chat.id  # ✅ берём правильный chat_id
     status_msg = await event.message.answer("🔍 Получаю информацию...")
 
+    # Получаем информацию через yt-dlp
     info = await asyncio.to_thread(extract_info, url)
     if not info:
         await status_msg.message.edit("❌ Не удалось получить информацию о контенте. Проверьте ссылку.")
         return
 
     await status_msg.message.edit("📥 Начинаю загрузку...")
-   
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
-
+        # Формируем подпись к видео
         if file_index is not None and total_files is not None:
             caption = (f"📦 Файл {file_index}/{total_files}\n"
                        f"🎬 {entry_info['title']}\n"
@@ -249,8 +249,6 @@ async def handle_url(event, url: str):
                        f"⏱ {format_duration(entry_info['duration'])}\n"
                        f"🔗 {entry_info['webpage_url']}")
 
-        chat_id = event.message.recipient.chat_id
-
         try:
             await send_video_via_sdk(chat_id, caption, file_path)
             return True, None
@@ -258,14 +256,61 @@ async def handle_url(event, url: str):
         except Exception as e:
             logger.error(f"Ошибка отправки через SDK: {e}")
 
-            # fallback — отправляем просто текст
+            # fallback — пробуем отправить просто текст через SDK
             try:
-                await max_bot.api.send_message(
-                chat_id=chat_id,
-                text=caption
-                )
-            except:
-                pass
+                await max_bot.send_message(chat_id=chat_id, text=caption)
+                logger.info("✅ Видео не удалось, отправлен fallback текст")
+            except Exception as e2:
+                logger.error(f"Ошибка fallback отправки текста: {e2}")
+
+            # fallback на Яндекс.Диск
+            try:
+                public_url = await upload_to_yadisk(file_path)
+                if public_url:
+                    await max_bot.send_message(chat_id=chat_id, text=f"🔗 Видео доступно на Яндекс.Диск: {public_url}")
+                    logger.info("✅ Видео отправлено через Яндекс.Диск")
+                    return True, public_url
+            except Exception as e3:
+                logger.error(f"Ошибка fallback на Яндекс.Диск: {e3}")
+
+            return False, None
+
+    # ------------------ SINGLE ------------------
+    if info['type'] == 'single':
+        ext = info.get('ext', 'mp4')
+        safe_title = re.sub(r'\W+', '', info['title'][:30])
+        file_path = await download_file(info['webpage_url'], safe_title, ext)
+        if not file_path:
+            await status_msg.message.edit("❌ Не удалось скачать файл.")
+            return
+
+        success, _ = await send_single_file(file_path, info)
+        Path(file_path).unlink(missing_ok=True)
+
+        if success:
+            if info.get('description'):
+                await event.message.answer(f"📝 Описание:\n\n{info['description'][:4000]}")
+                logger.info("✅ Описание отправлено")
+            await event.message.answer(
+                "❤️ Если вам понравился бот, поддержите проект:\n"
+                "💸 [Ссылка на донат](https://donate.example.com)\nСпасибо!"
+            )
+            logger.info("✅ Сообщение о донате отправлено")
+        else:
+            logger.info("❌ success=False, описание и донат не отправлены")
+
+    # ------------------ PLAYLIST ------------------
+    elif info['type'] == 'playlist':
+        await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Загружаю...")
+        tasks = []
+        for idx, entry in enumerate(info['entries']):
+            safe_title = re.sub(r'\W+', '', entry['title'][:20])
+            file_id = f"{safe_title}_{idx}"
+            ext = entry.get('ext', 'mp4')
+            tasks.append(download_file(entry['webpage_url'], file_id, ext))
+
+        file_paths = await asyncio.gather(*tasks)
+        successful_paths = [p for p in file_paths if p]
 
             return False, None
 
