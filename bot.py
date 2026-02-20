@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from maxapi import Bot, MessageType
+from maxapi import Bot
 from maxapi.attachments import ImageAttachment, VideoAttachment, FileAttachment
 
 # Для загрузки файлов на Яндекс.Диск
