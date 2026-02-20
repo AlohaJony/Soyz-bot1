@@ -300,60 +300,7 @@ async def handle_url(event, url: str):
             logger.info("❌ success=False, описание и донат не отправлены")
 
     # ------------------ PLAYLIST ------------------
-    elif info['type'] == 'playlist':
-        await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Загружаю...")
-        tasks = []
-        for idx, entry in enumerate(info['entries']):
-            safe_title = re.sub(r'\W+', '', entry['title'][:20])
-            file_id = f"{safe_title}_{idx}"
-            ext = entry.get('ext', 'mp4')
-            tasks.append(download_file(entry['webpage_url'], file_id, ext))
-
-        file_paths = await asyncio.gather(*tasks)
-        successful_paths = [p for p in file_paths if p]
-
-            return False, None
-
-    if info['type'] == 'single':
-        ext = info.get('ext', 'mp4')
-        safe_title = re.sub(r'\W+', '', info['title'][:30])
-        file_path = await download_file(info['webpage_url'], safe_title, ext)
-        if not file_path:
-            await status_msg.message.edit("❌ Не удалось скачать файл.")
-            return
-
-        success, _ = await send_single_file(file_path, info)
-        Path(file_path).unlink(missing_ok=True)
-
-        if success:
-            if info.get('description'):
-                logger.info(f"📤 Отправка описания, длина {len(info['description'])}")
-                await event.message.answer(f"📝 Описание:\n\n{info['description'][:4000]}")
-                logger.info("✅ Описание отправлено")
-            else:
-                logger.info("📝 Описание отсутствует в info")
-            await event.message.answer(
-                "❤️ Если вам понравился бот, поддержите проект:\n"
-                "💸 [Ссылка на донат](https://donate.example.com)\n"
-                "Спасибо!"
-            )
-            logger.info("✅ Сообщение о донате отправлено")
-        else:
-            logger.info("❌ success=False, описание и донат не отправлены")
-
-    else:  # playlist
-        await status_msg.message.edit(f"📦 Найдено {len(info['entries'])} файлов. Загружаю...")
-        tasks = []
-        for idx, entry in enumerate(info['entries']):
-            safe_title = re.sub(r'\W+', '', entry['title'][:20])
-            file_id = f"{safe_title}_{idx}"
-            ext = entry.get('ext', 'mp4')
-            tasks.append(download_file(entry['webpage_url'], file_id, ext))
-
-        file_paths = await asyncio.gather(*tasks)
-        successful_paths = [p for p in file_paths if p]
-
-        if not successful_paths:
+    if not successful_paths:
             await status_msg.message.edit("❌ Не удалось скачать ни одного файла.")
             return
 
@@ -369,20 +316,16 @@ async def handle_url(event, url: str):
 
         if any_success:
             if info.get('description'):
-                logger.info(f"📤 Отправка описания поста, длина {len(info['description'])}")
                 await event.message.answer(f"📝 Описание поста:\n\n{info['description'][:4000]}")
                 logger.info("✅ Описание поста отправлено")
-            else:
-                logger.info("📝 Описание поста отсутствует")
             await event.message.answer(
                 "❤️ Если вам понравился бот, поддержите проект:\n"
-                "💸 [Ссылка на донат](https://donate.example.com)\n"
-                "Спасибо!"
+                "💸 [Ссылка на донат](https://donate.example.com)\nСпасибо!"
             )
             logger.info("✅ Сообщение о донате отправлено")
         else:
-            logger.info("❌ no files sent, описание и донат не отправлены")
             await event.message.answer("❌ Не удалось отправить ни одного файла. Сервис временно недоступен.")
+            logger.info("❌ no files sent, описание и донат не отправлены")
 
     try:
         await status_msg.message.delete()
