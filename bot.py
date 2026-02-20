@@ -247,7 +247,7 @@ class MaxAPI:
                 
                 
 
-    async def send_message(self, user_id: int, text: str, attachments: list = None):
+    async def send_message(self, chat_id: int, text: str, attachments: list = None):
         payload = {
             "chat_id": chat_id,
             "text": text,
