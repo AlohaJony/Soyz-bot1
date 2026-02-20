@@ -8,7 +8,7 @@ import yadisk
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-from maxapi.types import UploadType
+from maxapi.enums import UploadType
 from maxapi import Bot as MaxBot, Dispatcher
 from maxapi.types import MessageCreated, BotStarted
 
