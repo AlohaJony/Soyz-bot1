@@ -139,120 +139,65 @@ async def download_file(url: str, file_id: str, ext: str) -> str | None:
         logger.error(f"Ошибка скачивания: {e}")
         return None
 
-# ----------------------------- КЛАСС ДЛЯ РАБОТЫ С MAX -----------------------------
-class MaxAPI:
-    def __init__(self, token: str):
-        self.token = token
-        self.base_url = "https://platform-api.max.ru"
-        self.headers = {"Authorization": token}
+# ----------------------------- КЛАСС ДЛЯ РАБОТЫ CHEREZ SDK -----------------------------
 
-    async def _request(self, method: str, path: str, **kwargs):
-        url = f"{self.base_url}/{path.lstrip('/')}"
-        if 'json' in kwargs:
-            headers = self.headers.copy()
-            headers["Content-Type"] = "application/json; charset=utf-8"
-        else:
-            headers = self.headers
+async def send_video_via_sdk(chat_id: int, caption: str, file_path: str):
+    # 1️⃣ Получаем upload URL через SDK
+    upload = await max_bot.api.get_upload_url(type="video")
+
+    upload_url = upload.url
+    token = upload.token
+
+    logger.info(f"📥 SDK upload URL получен")
+    logger.info(f"🔑 SDK token получен: {token[:20]}...")
+
+    # 2️⃣ Загружаем файл
+    with open(file_path, "rb") as f:
+        form = aiohttp.FormData()
+        form.add_field("data", f, filename=os.path.basename(file_path))
 
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, **kwargs) as resp:
-                if resp.status >= 400:
+            async with session.post(upload_url, data=form) as resp:
+
+                if resp.status not in (200, 201):
                     text = await resp.text()
-                    logger.error(f"MAX API error {resp.status}: {text}")
-                    raise Exception(f"MAX API error: {resp.status}")
-                if resp.status == 204:
-                    return None
-                try:
-                    return await resp.json()
-                except:
-                    text = await resp.text()
-                    logger.debug(f"Non-JSON response: {text[:200]}")
-                    return text
+                    logger.error(f"❌ Upload failed: {resp.status} {text}")
+                    raise Exception("Upload failed")
 
-    async def get_upload_url(self, media_type: str) -> dict:
-        """
-        Получает URL для загрузки.
-        Для video/audio токен приходит сразу.
-        Для image/file токен будет получен после загрузки.
-        """
-        endpoint = f"uploads?type={media_type}"
+                text = await resp.text()
 
-        data = await self._request("POST", endpoint)
+                if "<retval>1</retval>" in text:
+                    logger.info("✅ Upload успешен (retval=1)")
+                else:
+                    logger.warning(f"Ответ upload: {text[:200]}")
 
-        if not isinstance(data, dict):
-            raise Exception(f"❌ Ожидался JSON, получено: {data}")
+    # 3️⃣ Отправляем сообщение через SDK
+    delays = [2, 5, 10, 20]
 
-        if "url" not in data:
-            raise Exception(f"❌ В ответе нет поля 'url': {data}")
+    for attempt, delay in enumerate(delays, 1):
+        try:
+            logger.info(f"📤 Попытка {attempt} отправки видео через SDK...")
 
-        logger.info(f"📥 Получен upload URL для {media_type}: {data['url']}")
+            await max_bot.api.send_message(
+                chat_id=chat_id,
+                text=caption,
+                attachments=[{
+                    "type": "video",
+                    "payload": {
+                        "token": token
+                    }
+                }]
+            )
 
-        # Для video/audio токен приходит сразу
-        token = data.get("token")
+            logger.info("✅ Видео отправлено через SDK")
+            return
 
-        if media_type in ("video", "audio"):
-            if not token:
-                raise Exception(f"❌ Для {media_type} не получен token в ответе /uploads")
-            logger.info(f"🔑 Получен token сразу из /uploads: {token[:20]}...")
-
-        return data
-
-    async def upload_file(self, upload_url: str, file_path: str):
-        with open(file_path, 'rb') as f:
-            form = aiohttp.FormData()
-            form.add_field('data', f, filename=os.path.basename(file_path))
-            async with aiohttp.ClientSession() as session:
-                async with session.post(upload_url, data=form) as resp:
-                    if resp.status not in(200, 201):
-                        text = await resp.text()
-                        logger.error(f"Upload failed: {resp.status} {text}")
-                        raise Exception(f"Upload failed: {resp.status}")
-                    text = await resp.text()
-                    try:
-                        return await resp.json()
-                    except:
-                        # Если ответ не JSON, но статус 200, возможно, это успех, но токена нет – падаем
-                        if "<retval>1</retval>" in text:
-                            logger.info ("✅ Upload успешен (retval=1)")
-                            return {"status": "ok"}
-                        logger.error(f"❌ Неожиданный ответ upload: {text}")
-                        raise Exception("Upload response is not valid")
-                    logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
-                    return result['token']
-
-    async def send_media(self, chat_id: int, caption: str, file_path: str):
-        # Шаг 1: получаем URL для загрузки
-        upload_data = await self.get_upload_url('video')
-        upload_url = upload_data["url"]
-        # Шаг 2: загружаем файл и получаем токен
-        token = upload_data["token"]
-        # Шаг 3: отправляем сообщение с повторными попытками
-        await self.upload_file(upload_url, file_path)                    
-        attachment = {"type": "video", "payload": {"token": token}}
-        delays = [2, 5, 10, 20, 30]  # интервалы в секундах
-        for attempt, delay in enumerate(delays, 1):
-            try:
-                logger.info(f"📤 Попытка {attempt} отправки сообщения...")
-                await self.send_message(chat_id, caption, [attachment])
-                logger.info(f"✅ Сообщение отправлено с {attempt}-й попытки")
-                return
-            except Exception as e:
-                if "attachment.not.ready" in str(e):
-                    logger.warning(f"⏳Видео еще обрабатывается.Ждеем {delay} сек...")
-                    await asyncio.sleep(delay)
-                else:    
-                    raise
-                
-                
-
-    async def send_message(self, chat_id: int, text: str, attachments: list = None):
-        payload = {
-            "chat_id": chat_id,
-            "text": text,
-            "attachments": attachments or []
-        }
-        logger.info(f"📤 Отправка сообщения: {payload}")
-        return await self._request('POST', 'messages', json=payload)
+        except Exception as e:
+            if "attachment.not.ready" in str(e):
+                logger.warning(f"⏳ Видео обрабатывается, ждём {delay} сек...")
+                await asyncio.sleep(delay)
+            else:
+                raise
 
 # ----------------------------- FALLBACK НА ЯНДЕКС.ДИСК -----------------------------
 async def upload_to_yadisk(file_path: str) -> str | None:
@@ -290,7 +235,7 @@ async def handle_url(event, url: str):
     max_api = MaxAPI(TOKEN)
 
     async def send_single_file(file_path: str, entry_info: dict, file_index: int = None, total_files: int = None):
-        # Для file тип медиа не нужен, используем универсальную отправку
+
         if file_index is not None and total_files is not None:
             caption = (f"📦 Файл {file_index}/{total_files}\n"
                        f"🎬 {entry_info['title']}\n"
@@ -306,28 +251,22 @@ async def handle_url(event, url: str):
         chat_id = event.message.recipient.chat_id
 
         try:
-            await max_api.send_media(chat_id, caption, file_path)
-            logger.info("✅ Медиа отправлено через MAX")
+            await send_video_via_sdk(chat_id, caption, file_path)
             return True, None
+
         except Exception as e:
-            logger.error(f"Ошибка отправки через MAX: {e}")
-            # Пробуем отправить только текст (диагностика)
+            logger.error(f"Ошибка отправки через SDK: {e}")
+
+            # fallback — отправляем просто текст
             try:
-                await max_api.send_message(chat_id, caption)
-                logger.info("✅ Текст отправлен, проблема во вложении")
-            except Exception as e2:
-                logger.error(f"Даже текст не ушёл: {e2}")
-            # Fallback на Яндекс.Диск
-            yadisk_url = await upload_to_yadisk(file_path)
-            if yadisk_url:
-                await event.message.answer(
-                    f"⚠️ Файл{' ' + str(file_index) if file_index else ''} временно недоступен в MAX, но доступен по ссылке:\n"
-                    f"🔗 [Скачать]({yadisk_url})"
+                await max_bot.api.send_message(
+                chat_id=chat_id,
+                text=caption
                 )
-                return True, yadisk_url
-            else:
-                await event.message.answer(f"❌ Не удалось отправить файл{' ' + str(file_index) if file_index else ''}.")
-                return False, None
+            except:
+                pass
+
+            return False, None
 
     if info['type'] == 'single':
         ext = info.get('ext', 'mp4')
