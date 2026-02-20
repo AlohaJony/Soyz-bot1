@@ -170,7 +170,6 @@ class MaxAPI:
                     return text
 
     async def get_upload_url(self, media_type: str) -> str:
-        """Шаг 1: получить URL для загрузки (без токена)."""
         endpoint = f"uploads?type={media_type}"
         data = await self._request('POST', endpoint)
         if isinstance(data, str):
@@ -179,7 +178,6 @@ class MaxAPI:
         return data['url']
 
     async def upload_file(self, upload_url: str, file_path: str) -> str:
-        """Шаг 2: загрузить файл и получить токен."""
         with open(file_path, 'rb') as f:
             form = aiohttp.FormData()
             form.add_field('data', f, filename=os.path.basename(file_path))
@@ -189,28 +187,41 @@ class MaxAPI:
                         text = await resp.text()
                         logger.error(f"Upload failed: {resp.status} {text}")
                         raise Exception(f"Upload failed: {resp.status}")
-                    result = await resp.json()
+                    try:
+                        result = await resp.json()
+                    except:
+                        # Если ответ не JSON, но статус 200, возможно, это успех, но токена нет – падаем
+                        text = await resp.text()
+                        logger.error(f"Unexpected response (not JSON): {text}")
+                        raise Exception("Upload response is not JSON")
                     if 'token' not in result:
                         raise Exception("No token in upload response")
                     logger.info(f"🔑 Получен токен: {result['token'][:20]}...")
                     return result['token']
 
     async def send_media(self, user_id: int, caption: str, file_path: str):
-        """Полный процесс: загрузка и отправка видео."""
         # Шаг 1: получаем URL для загрузки
         upload_url = await self.get_upload_url('video')
         # Шаг 2: загружаем файл и получаем токен
         token = await self.upload_file(upload_url, file_path)
-        # Шаг 3: пауза для обработки (рекомендация документации)
-        logger.info("⏳ Пауза 2 секунды...")
-        await asyncio.sleep(2)
-        # Шаг 4: отправляем сообщение (без body, user_id на верхнем уровне)
+        # Шаг 3: отправляем сообщение с повторными попытками
         attachment = {"type": "video", "payload": {"token": token}}
-        logger.info(f"📤 Отправка вложения пользователю {user_id}: {attachment}")
-        return await self.send_message(user_id, caption, [attachment])
+        delays = [2, 5, 10, 20, 30]  # интервалы в секундах
+        for attempt, delay in enumerate(delays, 1):
+            try:
+                logger.info(f"📤 Попытка {attempt} отправки сообщения...")
+                await self.send_message(user_id, caption, [attachment])
+                logger.info(f"✅ Сообщение отправлено с {attempt}-й попытки")
+                return
+            except Exception as e:
+                logger.warning(f"❌ Попытка {attempt} не удалась: {e}")
+                if attempt == len(delays):
+                    logger.error("Все попытки отправки исчерпаны")
+                    raise
+                logger.info(f"⏳ Ожидание {delay} секунд перед следующей попыткой...")
+                await asyncio.sleep(delay)
 
     async def send_message(self, user_id: int, text: str, attachments: list = None):
-        """Отправляет сообщение пользователю."""
         payload = {
             "user_id": user_id,
             "text": text,
